@@ -1,0 +1,45 @@
+
+// Iterative implementatiom.
+// Returns the sum of the negative numbers in an array 'a'.  
+method CalcSumOfNegatives(a: array<int>) returns (result: int)
+  ensures result == sumNegatives(a[..])
+{
+  result := 0;
+  var i := 0;
+  while i < a.Length
+    invariant 0 <= i <= a.Length
+    invariant result == sumNegatives(a[..i])
+  {
+    if a[i] < 0 {
+      result := result + a[i];
+    }
+    i := i + 1;
+  }
+}
+
+function sumNegatives(s: seq<int>): int
+  decreases |s|
+  ensures |s| == 0 ==> sumNegatives(s) == 0
+  ensures |s| > 0 ==> sumNegatives(s) == (if s[|s|-1] < 0 then s[|s|-1] else 0) + sumNegatives(s[..|s|-1])
+  ensures forall s1, s2 :: sumNegatives(s1 + s2) == sumNegatives(s1) + sumNegatives(s2)
+{
+  if |s| == 0 then 0
+  else (if s[|s|-1] < 0 then s[|s|-1] else 0) + sumNegatives(s[..|s|-1])
+}
+
+// Test cases checked statically.
+method SumOfNegativesTest(){
+  var a1 := new int[] [2, -6, -9];
+  // Helper assertions to make the sequence concrete for Dafny
+  assert a1[..] == [2, -6, -9];
+  var out1 := CalcSumOfNegatives(a1);
+  assert out1 == -15;
+
+  var a2 := new int[] [10, -14, 13];
+  assert a2[..] == [10, -14, 13];
+  var out2 := CalcSumOfNegatives(a2);
+  assert out2 == -14;
+}
+
+
+

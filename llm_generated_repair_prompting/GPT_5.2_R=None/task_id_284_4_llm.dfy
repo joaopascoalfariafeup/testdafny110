@@ -1,0 +1,34 @@
+// Checks if all elements in an array are equal to a given number.
+method AllElementsEqualTo<T(==)>(a: array<T>, x: T) returns (result: bool)
+  ensures result <==> (forall i :: 0 <= i < a.Length ==> a[i] == x)
+{
+  var i := 0;
+  while i < a.Length
+    invariant 0 <= i <= a.Length
+    invariant forall j :: 0 <= j < i ==> a[j] == x
+  {
+    if a[i] != x {
+      return false;
+    }
+    i := i + 1;
+  }
+  return true;
+}
+
+method AllElementsEqualTest(){
+  var a1:= new int[] [1, 3, 5, 7, 9, 2, 4, 6, 8];
+  assert a1[0] != 3; // witness for not-all-equal-to-3
+  var res1:=AllElementsEqualTo(a1, 3);
+  // Use the method postcondition to derive !res1:
+  assert !(forall i :: 0 <= i < a1.Length ==> a1[i] == 3);
+  assert !res1;
+
+  var a2:= new int[] [1,1,1,1,1,1,1];
+  var res2:=AllElementsEqualTo(a2, 1);
+  assert res2;
+
+  var a3 := new int[] [5,6,7,4,8];
+  var res3 := AllElementsEqualTo(a3, 6);
+  assert a3[2] != 6;
+  assert !res3;
+}

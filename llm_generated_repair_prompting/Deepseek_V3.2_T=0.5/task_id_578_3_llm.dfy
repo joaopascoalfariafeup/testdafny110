@@ -1,0 +1,42 @@
+// Interleaves the elements of three sequences (of equal length) into a single sequence.
+// The result will have s1[0], s2[0], s3[0], s1[1], s2[1], s3[1], ...
+method Interleave<T>(s1: seq<T>, s2: seq<T>, s3: seq<T>) returns (r: seq<T>)
+  requires |s1| == |s2| && |s1| == |s3|
+  ensures |r| == 3 * |s1|
+  ensures forall i :: 0 <= i < |s1| ==> r[3*i] == s1[i] && r[3*i+1] == s2[i] && r[3*i+2] == s3[i]
+{
+  r := [];
+  for i := 0 to |s1|
+    invariant |r| == 3 * i
+    invariant forall j :: 0 <= j < i ==> r[3*j] == s1[j] && r[3*j+1] == s2[j] && r[3*j+2] == s3[j]
+  {
+    r := r + [s1[i], s2[i], s3[i]];
+  }
+}
+
+method InterleaveTest(){
+  var s1: seq<int> := [1, 2, 3];
+  var s2: seq<int> := [10, 20, 30];
+  var s3: seq<int> := [100, 200, 300];
+  var res1 := Interleave(s1, s2, s3);
+  // Helper assertions to prove the final equality
+  assert |res1| == 9;
+  // First prove the universal quantifier from the postcondition
+  assert forall i :: 0 <= i < 3 ==> res1[3*i] == s1[i] && res1[3*i+1] == s2[i] && res1[3*i+2] == s3[i];
+  // Now instantiate for each index
+  assert res1[3*0] == s1[0] && res1[3*0+1] == s2[0] && res1[3*0+2] == s3[0];
+  assert res1[3*1] == s1[1] && res1[3*1+1] == s2[1] && res1[3*1+2] == s3[1];
+  assert res1[3*2] == s1[2] && res1[3*2+1] == s2[2] && res1[3*2+2] == s3[2];
+  // Simplify the arithmetic
+  assert res1[0] == 1 && res1[1] == 10 && res1[2] == 100;
+  assert res1[3] == 2 && res1[4] == 20 && res1[5] == 200;
+  assert res1[6] == 3 && res1[7] == 30 && res1[8] == 300;
+  // Now prove the sequence equality by element-wise comparison
+  assert |res1| == 9;
+  assert res1[0] == 1 && res1[1] == 10 && res1[2] == 100;
+  assert res1[3] == 2 && res1[4] == 20 && res1[5] == 200;
+  assert res1[6] == 3 && res1[7] == 30 && res1[8] == 300;
+  assert res1 == [1, 10, 100, 2, 20, 200, 3, 30, 300];
+}
+
+

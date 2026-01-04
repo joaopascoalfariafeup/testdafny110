@@ -1,0 +1,38 @@
+/* 
+* Formal specification and verification of a simple method for calculating 
+* Fibonacci numbers applying dynamic programming.
+*/
+
+function {:fuel 3} Fib(n: nat): nat
+  decreases n
+{
+  if n == 0 then 0
+  else if n == 1 then 1
+  else Fib(n - 1) + Fib(n - 2)
+}
+
+// Iterative computation of the n-th Fibonacci number in time O(n) and space O(1), 
+// using dynamic programming 
+method CalcFib(n: nat) returns (res: nat) 
+  ensures res == Fib(n)
+{
+    var x, y := 0, 1; // fib(0), fib(1)
+    for i := 0 to n 
+      invariant 0 <= i <= n
+      invariant x == Fib(i)
+      invariant y == Fib(i + 1)
+    {
+        x, y := y, x + y; // simultaneous assignment
+    }
+    return x;
+}
+
+// Teste cases checked statically.  
+method TestFib()
+{
+  var f0 := CalcFib(0); assert f0 == 0;
+  var f1 := CalcFib(1); assert f1 == 1;
+  var f2 := CalcFib(2); assert f2 == 1;
+  var f5 := CalcFib(5); assert f5 == 5;
+}
+

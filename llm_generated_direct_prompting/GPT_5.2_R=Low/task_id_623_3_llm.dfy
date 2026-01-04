@@ -1,0 +1,37 @@
+// Returns a list of the elements of the input list raised to the power of n (>=0).
+function PowerList(l: seq<int>, n: nat): seq<int> {
+  seq i | 0 <= i < |l| :: Power(l[i], n)
+}
+
+method PowerOfListElements(l: seq<int>, n: nat) returns (result: seq<int>)
+  ensures |result| == |l|
+  ensures forall k :: 0 <= k < |l| ==> result[k] == Power(l[k], n)
+  ensures result == PowerList(l, n)
+{
+  result := [];
+  for i := 0 to |l|
+    invariant 0 <= i <= |l|
+    invariant |result| == i
+    invariant forall k :: 0 <= k < i ==> result[k] == Power(l[k], n)
+    invariant result == (seq j | 0 <= j < i :: Power(l[j], n))
+  {
+    result := result + [Power(l[i], n)];
+  }
+}
+
+// Returns the base raised to the power of the exponent.
+function Power(base: int, exponent: nat): int {
+  if exponent == 0 then 1
+  else base * Power(base, exponent-1)
+}
+
+method PowerOfListElementsTest(){
+  var s1: seq<int> := [1, 2, 3, 4];
+  var res1:=PowerOfListElements(s1, 2);
+  assert res1 == [1, 4, 9, 16];
+
+  var s2: seq<int> := [10, 20, 30];
+  var res2:=PowerOfListElements(s2, 3);
+  assert res2 == [1000, 8000, 27000];
+}
+

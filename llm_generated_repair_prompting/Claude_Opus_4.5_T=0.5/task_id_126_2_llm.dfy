@@ -1,0 +1,112 @@
+// Returns the sum of the common divisors of two positive integers.
+
+ghost function commonDivisors(a: nat, b: nat): seq<nat>
+  requires a > 0 && b > 0
+{
+  commonDivisorsUpTo(a, b, if a <= b then a else b)
+}
+
+ghost function commonDivisorsUpTo(a: nat, b: nat, k: nat): seq<nat>
+  requires a > 0 && b > 0
+{
+  if k == 0 then []
+  else if a % k == 0 && b % k == 0 then commonDivisorsUpTo(a, b, k - 1) + [k]
+  else commonDivisorsUpTo(a, b, k - 1)
+}
+
+ghost function sumSeq(s: seq<nat>): nat
+{
+  if |s| == 0 then 0
+  else s[|s| - 1] + sumSeq(s[..|s| - 1])
+}
+
+ghost function sumOfCommonDivisorsUpTo(a: nat, b: nat, k: nat): nat
+  requires a > 0 && b > 0
+{
+  if k == 0 then 0
+  else if a % k == 0 && b % k == 0 then k + sumOfCommonDivisorsUpTo(a, b, k - 1)
+  else sumOfCommonDivisorsUpTo(a, b, k - 1)
+}
+
+method SumOfCommonDivisors(a: nat, b: nat) returns (sum: nat)
+  requires a > 0 && b > 0
+  ensures sum == sumSeq(commonDivisors(a, b))
+{
+  sum := 0; // sum of the common divisors so far
+  var i: nat := 1;
+  var minAB := if a <= b then a else b;
+  while i <= a && i <= b
+    invariant 1 <= i <= minAB + 1
+    invariant sum == sumOfCommonDivisorsUpTo(a, b, i - 1)
+  {
+    if a % i == 0 && b % i == 0 {
+      sum := sum + i;
+    }
+    i := i + 1;
+  }
+  assert i == minAB + 1;
+  assert sum == sumOfCommonDivisorsUpTo(a, b, minAB);
+  SumEquivalenceLemma(a, b, minAB);
+}
+
+lemma SumEquivalenceLemma(a: nat, b: nat, k: nat)
+  requires a > 0 && b > 0
+  ensures sumOfCommonDivisorsUpTo(a, b, k) == sumSeq(commonDivisorsUpTo(a, b, k))
+{
+  if k == 0 {
+  } else if a % k == 0 && b % k == 0 {
+    SumEquivalenceLemma(a, b, k - 1);
+    var s := commonDivisorsUpTo(a, b, k - 1) + [k];
+    assert s[..|s| - 1] == commonDivisorsUpTo(a, b, k - 1);
+  } else {
+    SumEquivalenceLemma(a, b, k - 1);
+  }
+}
+
+lemma SumSeqLemma(s: seq<nat>)
+  requires |s| == 2
+  ensures sumSeq(s) == s[0] + s[1]
+{
+  assert s[..|s| - 1] == [s[0]];
+  assert sumSeq([s[0]]) == s[0] + sumSeq([]);
+  assert sumSeq([]) == 0;
+}
+
+lemma SumSeqLemma4(s: seq<nat>)
+  requires |s| == 4
+  ensures sumSeq(s) == s[0] + s[1] + s[2] + s[3]
+{
+  assert s[..|s| - 1] == [s[0], s[1], s[2]];
+  var s3 := [s[0], s[1], s[2]];
+  assert s3[..|s3| - 1] == [s[0], s[1]];
+  var s2 := [s[0], s[1]];
+  assert s2[..|s2| - 1] == [s[0]];
+  var s1 := [s[0]];
+  assert s1[..|s1| - 1] == [];
+}
+
+// Test cases checked statically
+method SumOfCommonDivisorsTest(){
+  var out1 := SumOfCommonDivisors(10, 15);
+  assert commonDivisors(10, 15) == [1, 5];
+  SumSeqLemma([1, 5]);
+  assert sumSeq([1, 5]) == 6;
+  assert out1 == 6;
+  
+  var out2 := SumOfCommonDivisors(10, 20);
+  assert commonDivisors(10, 20) == [1, 2, 5, 10];
+  SumSeqLemma4([1, 2, 5, 10]);
+  assert sumSeq([1, 2, 5, 10]) == 18;
+  assert out2 == 18;
+  
+  var out3 := SumOfCommonDivisors(4,6);
+  assert commonDivisors(4, 6) == [1, 2];
+  SumSeqLemma([1, 2]);
+  assert sumSeq([1, 2]) == 3;
+  assert out3 == 3;
+
+  // @invalid: var out4 := SumOfCommonDivisors(0, 1); 
+  // @invalid: var out5 := SumOfCommonDivisors(1, 0); 
+  // @invalid: var out6 := SumOfCommonDivisors(0, 0); 
+
+}

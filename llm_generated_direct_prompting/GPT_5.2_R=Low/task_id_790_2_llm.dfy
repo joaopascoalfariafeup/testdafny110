@@ -1,0 +1,38 @@
+// Checks if all elements at even indices are even.
+method IsEvenAtIndexEven(s: seq<int>) returns (result: bool)
+  ensures result <==> (forall i:int :: 0 <= i < |s| ==> (IsEven(i) ==> IsEven(s[i])))
+{
+  for i := 0 to |s|
+    invariant 0 <= i <= |s|
+    invariant forall j:int :: 0 <= j < i ==> (IsEven(j) ==> IsEven(s[j]))
+  {
+    if IsEven(i) && !IsEven(s[i]) {
+      assert 0 <= i < |s|;
+      assert exists j:int :: 0 <= j < |s| && IsEven(j) && !IsEven(s[j]);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Checks if a number is even.
+predicate IsEven(n: int) {
+  n % 2 == 0
+}
+
+// Tests.
+method IsEvenAtIndexEvenTest(){
+  var s1: seq<int> := [3, 2, 1];
+  var res1 := IsEvenAtIndexEven(s1);
+  assert !IsEven(s1[0]); // proof heper (counter-example)
+  assert !res1;
+
+  var s2: seq<int> := [1, 2, 3];
+  var res2 := IsEvenAtIndexEven(s2);
+  assert !IsEven(s2[0]); // proof heper (counter-example)
+  assert !res2;
+
+  var s3: seq<int> := [2, 1, 4];
+  var res3 := IsEvenAtIndexEven(s3);
+  assert res3;
+}

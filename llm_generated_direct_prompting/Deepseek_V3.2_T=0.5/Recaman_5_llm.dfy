@@ -1,0 +1,109 @@
+/* the Recaman's sequence is defined as: 
+    R(0) = 0
+    For n > 0, R(n) = R(n-1) - n if positive and not already in the sequence, otherwise R(n) = R(n-1) + n.
+*/
+
+predicate ContainsPredicate(x: int, a: array<nat>, len: nat)
+  reads a
+{
+  exists i: nat :: 0 <= i <= len && a[i] == x
+}
+
+method Contains(x: int, a: array<nat>, len: nat) returns (res: bool)
+  requires a != null
+  requires len < a.Length
+  ensures res == ContainsPredicate(x, a, len)
+{
+    for i := 0 to len
+      invariant forall k: nat :: 0 <= k < i ==> a[k] != x
+      invariant !ContainsPredicate(x, a, i-1)
+    {
+        if a[i] == x {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returns the n-th term of Recaman's sequence
+method Recaman(n: nat) returns (res: nat)
+  ensures res == RecamanSeq(n)
+{
+    var a: array<nat> := new nat[n+1];
+    a[0] := 0;
+    for i := 1 to n + 1  
+      invariant 0 < i <= n+1
+      invariant a != null && a.Length == n+1
+      invariant forall k: nat :: 0 <= k < i ==> a[k] == RecamanSeq(k)
+      invariant forall k: nat :: 0 <= k < i ==> a[k] >= 0
+    {
+       var x  := a[i-1] - i;
+       if x > 0 {
+           var c := Contains(x, a, i-1);
+           if ! c {
+             a[i] := x;
+           } 
+           else {
+             a[i] := a[i-1] + i;
+           }
+       } 
+        else {
+            a[i] := a[i-1] + i;
+        }
+    }
+    return a[n];
+}
+
+function RecamanSeq(n: nat): nat
+  decreases n
+{
+  if n == 0 then 0
+  else
+    var prev := RecamanSeq(n-1);
+    var candidate := prev - n;
+    if candidate > 0 && !ContainsPredicate(candidate, RecamanArray(n-1), n-1) then
+      candidate
+    else
+      prev + n
+}
+
+function RecamanArray(m: nat): array<nat>
+  ensures result != null
+  ensures result.Length == m+1
+  ensures forall k: nat :: 0 <= k <= m ==> result[k] == RecamanSeq(k)
+{
+  if m == 0 then
+    var a := new nat[1];
+    a[0] := 0;
+    a
+  else
+    var a := RecamanArray(m-1);
+    var b := new nat[m+1];
+    var i: nat := 0;
+    while i < m
+      invariant 0 <= i <= m
+      invariant forall k: nat :: 0 <= k < i ==> b[k] == a[k]
+    {
+      b[i] := a[i];
+      i := i + 1;
+    }
+    var prev := a[m-1];
+    var candidate := prev - m;
+    if candidate > 0 && !ContainsPredicate(candidate, a, m-1) then
+      b[m] := candidate
+    else
+      b[m] := prev + m;
+    b
+}
+
+method TestRecaman() {
+    var r0 := Recaman(0); assert r0 == 0;
+    var r1 := Recaman(1); assert r1 == 1;
+    var r2 := Recaman(2); assert r2 == 3;  
+    var r3 := Recaman(3); assert r3 == 6;
+    var r4 := Recaman(4); assert r4 == 2;
+    var r5 := Recaman(5); assert r5 == 7;
+    var r6 := Recaman(6); assert r6 == 13;
+    var r7 := Recaman(7); assert r7 == 20;
+    var r8 := Recaman(8); assert r8 == 12; // decreases
+}

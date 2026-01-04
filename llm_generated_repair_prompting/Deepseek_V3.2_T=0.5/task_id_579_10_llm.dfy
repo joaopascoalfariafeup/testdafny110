@@ -1,0 +1,144 @@
+// Takes two arrays and returns the set of elements that are in one array 
+// but not in the other.
+// Implemented using array and set operations.
+method DissimilarElements<T(==)>(a: array<T>, b: array<T>) returns (res: set<T>)
+  ensures res == (set i | 0 <= i < a.Length :: a[i]) - (set i | 0 <= i < b.Length :: b[i]) + (set i | 0 <= i < b.Length :: b[i]) - (set i | 0 <= i < a.Length :: a[i])
+{
+    var only_in_a : set<T> := {};
+    for i := 0 to a.Length
+      invariant only_in_a == (set j | 0 <= j < i :: a[j]) - (set k | 0 <= k < b.Length :: b[k])
+    {
+        var c := contains(b, a[i]);
+        if !c {
+            only_in_a := only_in_a + {a[i]};
+        }
+    }
+
+    var only_in_b : set<T> := {};
+    for i := 0 to b.Length
+      invariant only_in_b == (set j | 0 <= j < i :: b[j]) - (set k | 0 <= k < a.Length :: a[k])
+    {
+        var c := contains(a, b[i]);
+        if !c {
+            only_in_b  := only_in_b  + {b[i]};
+        }
+    }
+
+    // Prove the final postcondition
+    // only_in_a = A - B where A = set of a, B = set of b
+    // only_in_b = B - A
+    // So only_in_a + only_in_b = (A - B) ∪ (B - A) = symmetric difference
+    // The postcondition is: (A - B) ∪ (B - A)
+    // We need to show that (A - B) ∪ (B - A) = (A - B) + (B - A) (set union)
+    // and that this equals the expression in the postcondition
+    // The postcondition expression is: (A - B) + (B - A) (same as what we have)
+    // So we just need to show that our only_in_a and only_in_b satisfy this
+    // which they do by the loop invariants
+    // Add an assertion to help Dafny connect the dots
+    assert only_in_a == (set i | 0 <= i < a.Length :: a[i]) - (set i | 0 <= i < b.Length :: b[i]);
+    assert only_in_b == (set i | 0 <= i < b.Length :: b[i]) - (set i | 0 <= i < a.Length :: a[i]);
+    // The postcondition is: (A - B) + (B - A)
+    // We have only_in_a == A - B and only_in_b == B - A
+    // So only_in_a + only_in_b == (A - B) + (B - A)
+    // Therefore res == only_in_a + only_in_b satisfies the postcondition
+    res := only_in_a  + only_in_b;
+}
+
+// Checks if an element x is in an array a, using only array operations.
+method contains<T(==)>(a: array<T>, x: T) returns (res: bool)
+  ensures res <==> (exists i | 0 <= i < a.Length :: a[i] == x)
+{
+    res := false;
+    for i := 0 to a.Length
+      invariant !res ==> (forall j | 0 <= j < i :: a[j] != x)
+      invariant res <==> (exists j | 0 <= j < i :: a[j] == x)
+    {
+        if a[i] == x {
+            res := true;
+            break;
+        }
+    }
+}
+
+
+// Test cases checked statically by Dafny.
+method DissimilarElementsTest(){
+    var a1 := new int[] [3, 4, 3, 5, 6];
+    var a2 := new int[] [5, 7, 4, 10, 5];
+    var res1 := DissimilarElements(a1, a2);
+    // Add helper assertions to prove the test assertion
+    // First prove the set comprehensions
+    ghost var s1 := (set i | 0 <= i < a1.Length :: a1[i]);
+    ghost var s2 := (set i | 0 <= i < a2.Length :: a2[i]);
+    // Prove s1 == {3,4,5,6} by case analysis
+    // First, show that all elements are in s1
+    assert a1[0] == 3;
+    assert a1[1] == 4;
+    assert a1[2] == 3;
+    assert a1[3] == 5;
+    assert a1[4] == 6;
+    // Now prove membership using the definition of set comprehension
+    assert 0 <= 0 < a1.Length && a1[0] == 3 ==> 3 in s1;
+    assert 0 <= 1 < a1.Length && a1[1] == 4 ==> 4 in s1;
+    assert 0 <= 2 < a1.Length && a1[2] == 3 ==> 3 in s1;
+    assert 0 <= 3 < a1.Length && a1[3] == 5 ==> 5 in s1;
+    assert 0 <= 4 < a1.Length && a1[4] == 6 ==> 6 in s1;
+    // Prove that only these elements are in s1
+    // For any x in s1, there exists i such that a1[i] = x
+    // Since a1 only contains 3,4,5,6, x must be one of them
+    assert forall i | 0 <= i < a1.Length :: a1[i] == 3 || a1[i] == 4 || a1[i] == 5 || a1[i] == 6;
+    assert forall x :: x in s1 ==> x == 3 || x == 4 || x == 5 || x == 6;
+    // Prove s2 == {4,5,7,10}
+    assert a2[0] == 5;
+    assert a2[1] == 7;
+    assert a2[2] == 4;
+    assert a2[3] == 10;
+    assert a2[4] == 5;
+    assert 0 <= 0 < a2.Length && a2[0] == 5 ==> 5 in s2;
+    assert 0 <= 1 < a2.Length && a2[1] == 7 ==> 7 in s2;
+    assert 0 <= 2 < a2.Length && a2[2] == 4 ==> 4 in s2;
+    assert 0 <= 3 < a2.Length && a2[3] == 10 ==> 10 in s2;
+    assert 0 <= 4 < a2.Length && a2[4] == 5 ==> 5 in s2;
+    assert forall i | 0 <= i < a2.Length :: a2[i] == 4 || a2[i] == 5 || a2[i] == 7 || a2[i] == 10;
+    assert forall x :: x in s2 ==> x == 4 || x == 5 || x == 7 || x == 10;
+    // Now compute differences
+    // s1 - s2: remove elements that are in s2
+    // 3 and 6 are not in s2, so they remain
+    // 4 and 5 are in s2, so they are removed
+    assert 3 in s1 && 3 !in s2 ==> 3 in s1 - s2;
+    assert 6 in s1 && 6 !in s2 ==> 6 in s1 - s2;
+    assert 4 in s1 && 4 in s2 ==> 4 !in s1 - s2;
+    assert 5 in s1 && 5 in s2 ==> 5 !in s1 - s2;
+    // Prove s1 - s2 == {3,6}
+    assert s1 - s2 == {3,6};
+    // s2 - s1: remove elements that are in s1
+    // 7 and 10 are not in s1, so they remain
+    // 4 and 5 are in s1, so they are removed
+    assert 7 in s2 && 7 !in s1 ==> 7 in s2 - s1;
+    assert 10 in s2 && 10 !in s1 ==> 10 in s2 - s1;
+    assert 4 in s2 && 4 in s1 ==> 4 !in s2 - s1;
+    assert 5 in s2 && 5 in s1 ==> 5 !in s2 - s1;
+    // Prove s2 - s1 == {7,10}
+    assert s2 - s1 == {7,10};
+    // Union of the two sets
+    assert {3,6} + {7,10} == {3,6,7,10};
+    // Now we can assert the result
+    assert res1 == {3,6,7,10};
+
+    var res2 := DissimilarElements(a1, a1);
+    // s1 is still {3,4,5,6}
+    // s1 - s1 = {}
+    assert s1 - s1 == {};
+    var emptySet: set<int> := {};
+    assert emptySet + emptySet == emptySet;
+    assert res2 == {};
+
+    var a3 := new int[] [];
+    var res3 := DissimilarElements(a1, a3);
+    assert (set i | 0 <= i < a3.Length :: a3[i]) == {};
+    assert s1 - {} == s1;
+    assert {} - s1 == {};
+    assert s1 + {} == s1;
+    assert  res3 == s1;
+}
+

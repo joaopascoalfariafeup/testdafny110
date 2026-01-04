@@ -1,0 +1,30 @@
+// Returns an array of the cubes of the elements of the input array.
+method CubeElements(a: array<int>) returns (cubed: array<int>)
+  ensures cubed.Length == a.Length
+  ensures forall j :: 0 <= j < a.Length ==> cubed[j] == cube(a[j])
+{
+    cubed := new int[a.Length];
+    for i := 0 to a.Length
+      invariant cubed.Length == a.Length
+      invariant 0 <= i <= a.Length
+      invariant forall j :: 0 <= j < i ==> cubed[j] == cube(a[j])
+    {
+        cubed[i] := cube(a[i]);
+    }
+}
+
+function cube(x: int) : int {
+     x * x * x
+}
+
+
+// Test cases checked statically.
+method CubeElementsTest(){
+  var a1 := new int[] [1, 2, 3, 4, 5];
+  var res1 := CubeElements(a1);
+  assert res1[..] == [1, 8, 27, 64, 125];
+
+  var a2 := new int[] [2, 1, 0, -1, -2];
+  var res2 := CubeElements(a2);
+  assert res2[..] == [8, 1, 0, -1, -8];
+}

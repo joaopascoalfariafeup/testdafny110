@@ -1,0 +1,58 @@
+// Auxiliary function that gives the parent index of a non-root node (with index > 0) in a heap.
+function Parent(i: nat): nat
+  requires i > 0
+{ 
+  (i-1)/2 
+}
+
+lemma ParentLt(i: nat)
+  requires i > 0
+  ensures Parent(i) < i
+{
+  assert i - 1 < 2 * i;
+  assert (i - 1) / 2 < i;
+}
+
+predicate MinHeap(a: array<int>)
+  reads a
+{
+  forall i: nat :: 1 <= i < a.Length ==> a[Parent(i)] <= a[i]
+}
+
+// Check if an array of integers represents a min heap.
+method IsMinHeap(a: array<int>) returns (result: bool)
+  ensures result == MinHeap(a)
+{
+  if a.Length > 0 {
+    for i := 1 to a.Length 
+      invariant 1 <= i <= a.Length
+      invariant forall k: nat :: 1 <= k < i ==> a[Parent(k)] <= a[k]
+    {
+      if i > 0 { ParentLt(i); }
+      if a[Parent(i)] > a[i] {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Test cases checked statically.
+method IsMinHeapTest(){
+  // Totally sorted
+  var a1:= new int[] [1, 2, 3, 4, 5, 6];
+  var res1:=IsMinHeap(a1);
+  assert res1;
+
+  // Partially sorted
+  var a2:= new int[] [2, 4, 3, 5, 10, 15];
+  var res2 := IsMinHeap(a2);
+  assert res2;
+
+  // Not partially sorted
+  var a3:= new int[] [2, 10, 4, 5, 3, 15];
+  var res3 := IsMinHeap(a3);
+  assert !res3;
+
+
+}

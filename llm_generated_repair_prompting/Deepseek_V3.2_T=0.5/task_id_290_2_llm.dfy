@@ -1,0 +1,49 @@
+// Returns the longest list in a non-empty list of lists.
+// If there are multiple lists of the same length, any one can be returned.
+method MaxLengthSublist<T>(lists: seq<seq<T>>) returns (maxSublist: seq<T>)
+  requires |lists| > 0
+  ensures |maxSublist| >= 0
+  ensures exists i :: 0 <= i < |lists| && maxSublist == lists[i]
+  ensures forall i :: 0 <= i < |lists| ==> |lists[i]| <= |maxSublist|
+{
+  maxSublist := lists[0];
+  for i := 1 to |lists|
+    invariant 1 <= i <= |lists|
+    invariant |maxSublist| >= 0
+    invariant exists j :: 0 <= j < i && maxSublist == lists[j]
+    invariant forall j :: 0 <= j < i ==> |lists[j]| <= |maxSublist|
+  {
+    if |lists[i]| > |maxSublist| {
+      maxSublist := lists[i];
+    }
+  }
+}
+
+method MaxLengthListTest(){
+  // typical case
+  var s1: seq<seq<int>> := [[0], [1, 3], [5, 7], [9, 11], [13, 15, 17]];
+  var res1 := MaxLengthSublist(s1);
+  // Provide helper assertions to help Dafny prove the test assertion
+  assert s1[0] == [0];
+  assert s1[1] == [1, 3];
+  assert s1[2] == [5, 7];
+  assert s1[3] == [9, 11];
+  assert s1[4] == [13, 15, 17];
+  assert |s1[4]| == 3;
+  assert forall i :: 0 <= i < |s1| ==> |s1[i]| <= 3;
+  assert res1 == [13, 15, 17];
+
+  // multiple solutions
+  var s2: seq<seq<int>> := [[1], [5, 7], [3, 12]];
+  var e2: seq<int> := [10, 12, 14,15];
+  var res2 := MaxLengthSublist(s2);
+  // Provide helper assertions
+  assert s2[0] == [1];
+  assert s2[1] == [5, 7];
+  assert s2[2] == [3, 12];
+  assert |s2[1]| == 2 && |s2[2]| == 2;
+  assert forall i :: 0 <= i < |s2| ==> |s2[i]| <= 2;
+  assert res2 == [5, 7] || res2 == [3, 12]; 
+}
+
+

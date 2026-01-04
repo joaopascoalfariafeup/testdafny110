@@ -1,0 +1,82 @@
+// Determines the last position of an element 'elem' in a sorted array 'arr'.
+// If the element is not in the array, the method returns -1.
+predicate Sorted(arr: array<int>)
+  reads arr
+{
+  forall i:int, j:int :: 0 <= i < j < arr.Length ==> arr[i] <= arr[j]
+}
+
+lemma SortedIndexOrder(arr: array<int>, i:int, j:int)
+  requires Sorted(arr)
+  requires 0 <= i < arr.Length
+  requires 0 <= j < arr.Length
+  ensures i <= j ==> arr[i] <= arr[j]
+  ensures j <= i ==> arr[j] <= arr[i]
+{
+  if i < j {
+    assert arr[i] <= arr[j];
+  } else if j < i {
+    assert arr[j] <= arr[i];
+  }
+}
+
+method LastPosition(arr: array<int>, elem: int) returns (pos: int)
+  requires Sorted(arr)
+  ensures pos == -1 || 0 <= pos < arr.Length
+  ensures pos != -1 ==> arr[pos] == elem
+  ensures pos != -1 ==> forall k:int :: pos < k < arr.Length ==> arr[k] > elem
+  ensures pos == -1 ==> forall k:int :: 0 <= k < arr.Length ==> arr[k] != elem
+{
+    // Scan from the end of the array to the begin of the array.
+    var i := arr.Length - 1;
+    while i >= 0 && arr[i] > elem
+      invariant Sorted(arr)
+      invariant -1 <= i < arr.Length
+      invariant forall k:int :: i < k < arr.Length ==> arr[k] > elem
+    {        
+        i := i - 1;
+    }
+    if i >= 0 && arr[i] == elem {
+        return i;
+    }
+
+    if i < 0 {
+      assert forall k:int :: 0 <= k < arr.Length ==> arr[k] > elem;
+    } else {
+      assert arr[i] <= elem;
+      assert arr[i] != elem;
+      assert arr[i] < elem;
+
+      assert forall k:int | 0 <= k <= i
+        ensures arr[k] <= arr[i]
+      by {
+        if k < i {
+          SortedIndexOrder(arr, k, i);
+        } else {
+          assert k == i;
+        }
+      }
+
+      assert forall k:int :: 0 <= k <= i ==> arr[k] < elem;
+    }
+
+    assert forall k:int :: 0 <= k < arr.Length ==> arr[k] != elem;
+    return -1;
+}
+
+// Test cases checked statically.
+method LastPositionTest(){
+    var a1 := new int[] [1, 1, 1, 2, 3, 4, 4];
+
+    var out1 := LastPosition(a1, 1);
+    assert out1 == 2;
+
+    var out2 := LastPosition(a1, 4);
+    assert out2 == 6;
+
+    var out3 := LastPosition(a1, 5);
+    assert out3 == -1;
+
+    var out4 := LastPosition(a1, 0);
+    assert out3 == -1;
+}

@@ -1,0 +1,45 @@
+
+// Obtains the smallest and second smallest element in an array of integers (in a single scan).
+// The array must have at least two distinct elements.
+method SecondSmallest(s: array<int>) returns (smallest: int, secondSmallest: int)
+  requires s.Length >= 2 && exists i, j :: 0 <= i < s.Length && 0 <= j < s.Length && i != j && s[i] != s[j]
+  ensures (forall i :: 0 <= i < s.Length ==> s[i] >= smallest) && (forall i :: 0 <= i < s.Length ==> s[i] == smallest || s[i] >= secondSmallest) && smallest <= secondSmallest
+{
+    // index of the smallest element inspected so far.
+    var minIndex := 0; 
+
+    // or -1 if all elements are equal so far.
+    var secondMinIndex := -1; 
+
+    for i := 1 to s.Length
+        invariant 0 <= minIndex < s.Length
+        invariant secondMinIndex == -1 || (0 <= secondMinIndex < s.Length && s[secondMinIndex] >= s[minIndex])
+        invariant (forall j :: 0 <= j < i ==> s[j] >= s[minIndex]) && (forall j :: 0 <= j < i ==> s[j] == s[minIndex] || s[j] >= (if secondMinIndex == -1 then s[minIndex] else s[secondMinIndex]))
+    {
+        if s[i] < s[minIndex] {
+            secondMinIndex := minIndex;
+            minIndex := i;
+        } else if s[i] > s[minIndex] && (secondMinIndex == -1 || s[i] < s[secondMinIndex]) {
+            secondMinIndex := i;
+        }
+    }
+
+    return s[minIndex], s[secondMinIndex];
+}
+
+// Test cases checked statically.
+method SecondSmallestTest(){
+    var a1:= new int[] [1, 2, -8, -2, -2, -8];
+    var s1, out1 := SecondSmallest(a1);
+    assert  s1 == -8 && out1 == -2;
+
+    var a2:= new int[] [2, 2, 1];
+    assert a2[0] != a2[2];
+    var s2, out2 := SecondSmallest(a2);
+    assert s2 == 1 && out2 == 2;
+
+    var a3:= new int[] [-2, -3, -1];
+    assert a3[1] != a3[0];
+    var s3, out3 := SecondSmallest(a3);
+    assert s3 == -3 && out3 == -2;
+}

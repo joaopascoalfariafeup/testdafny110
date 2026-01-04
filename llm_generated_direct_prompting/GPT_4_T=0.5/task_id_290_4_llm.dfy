@@ -1,0 +1,28 @@
+method MaxLengthSublist<T>(lists: seq<seq<T>>) returns (maxSublist: seq<T>)
+  requires |lists| > 0
+  ensures maxSublist in lists && (forall l :: l in lists ==> |maxSublist| >= |l|)
+{
+  maxSublist := lists[0];
+  for i := 1 to |lists|
+    invariant 1 <= i <= |lists|
+    invariant maxSublist in lists[0..i] && (forall l :: l in lists[0..i] ==> |maxSublist| >= |l|)
+  {
+    if |lists[i]| > |maxSublist| {
+      maxSublist := lists[i];
+    }
+  }
+}
+
+method MaxLengthListTest(){
+  // typical case
+  var s1: seq<seq<int>> := [[0], [1, 3], [5, 7], [9, 11], [13, 15, 17]];
+  var res1 := MaxLengthSublist(s1);
+  assert res1 == [13, 15, 17];
+
+  // multiple solutions
+  var s2: seq<seq<int>> := [[1], [5, 7], [3, 12]];
+  var e2: seq<int> := [10, 12, 14,15];
+  var res2 := MaxLengthSublist(s2);
+  assert res2 == [5, 7] || res2 == [3, 12]; 
+}
+

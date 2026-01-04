@@ -1,0 +1,49 @@
+
+predicate HasTwoDistinctElements(s: array<int>)
+{
+  exists i, j :: 0 <= i < |s| && 0 <= j < |s| && i != j && s[i] != s[j]
+}
+
+method SecondSmallest(s: array<int>) returns (smallest: int, secondSmallest: int)
+  requires s.Length >= 2
+  requires HasTwoDistinctElements(s)
+  ensures forall i :: 0 <= i < s.Length ==> s[i] >= smallest
+  ensures forall i :: 0 <= i < s.Length && s[i] != smallest ==> s[i] >= secondSmallest
+  ensures exists i :: 0 <= i < s.Length && s[i] == smallest
+  ensures exists i :: 0 <= i < s.Length && s[i] == secondSmallest && s[i] != smallest
+{
+    var minIndex := 0; 
+    var secondMinIndex := -1; 
+
+    for i := 1 to s.Length
+      invariant 0 <= minIndex < s.Length
+      invariant secondMinIndex == -1 || (0 <= secondMinIndex < s.Length && s[secondMinIndex] != s[minIndex])
+      invariant forall j :: 0 <= j < i ==> s[j] >= s[minIndex]
+      invariant secondMinIndex == -1 || forall j :: 0 <= j < i && s[j] != s[minIndex] ==> s[j] >= s[secondMinIndex]
+    {
+        if s[i] < s[minIndex] {
+            secondMinIndex := minIndex;
+            minIndex := i;
+        } else if s[i] > s[minIndex] && (secondMinIndex == -1 || s[i] < s[secondMinIndex]) {
+            secondMinIndex := i;
+        }
+    }
+
+    return s[minIndex], s[secondMinIndex];
+}
+
+method SecondSmallestTest(){
+    var a1:= new int[] [1, 2, -8, -2, -2, -8];
+    var s1, out1 := SecondSmallest(a1);
+    assert  s1 == -8 && out1 == -2;
+
+    var a2:= new int[] [2, 2, 1];
+    assert a2[0] != a2[2];
+    var s2, out2 := SecondSmallest(a2);
+    assert s2 == 1 && out2 == 2;
+
+    var a3:= new int[] [-2, -3, -1];
+    assert a3[1] != a3[0];
+    var s3, out3 := SecondSmallest(a3);
+    assert s3 == -3 && out3 == -2;
+}

@@ -1,0 +1,110 @@
+/* 
+* Verification in Dafny of the fast modular exponentiation algorithm,  
+* as described in https://en.wikipedia.org/wiki/Modular_exponentiation.
+* It is based on the fast exponentiation algorithm.
+*/
+
+function PowerH(b: nat, e: nat): nat
+  decreases e
+{
+  if e == 0 then
+    1
+  else if e % 2 == 0 then
+    PowerH(b * b, e / 2)
+  else
+    b * PowerH(b * b, e / 2)
+}
+
+function ModPowerH(b: nat, e: nat, m: nat): nat
+  requires m > 0
+  decreases e
+{
+  if e == 0 then
+    1 % m
+  else if e % 2 == 0 then
+    ModPowerH((b * b) % m, e / 2, m)
+  else
+    ((b % m) * ModPowerH((b * b) % m, e / 2, m)) % m
+}
+
+// Computes x^n in time O(log n) and space O(1) 
+// using the fast exponentiation algorithm.
+method FastExponentiation(x: nat, n: nat) returns (p: nat)
+  ensures p == PowerH(x, n)
+{
+    var mx: nat  := x; // remaining base
+    var mn: nat := n; // remaining exponent
+    p := 1; // partial result
+    while mn > 0 
+      invariant p * PowerH(mx, mn) == PowerH(x, n)
+    {
+        if mn % 2 == 1 {
+            assert PowerH(mx, mn) == mx * PowerH(mx * mx, mn / 2);
+            p := p * mx;
+        } else {
+            assert PowerH(mx, mn) == PowerH(mx * mx, mn / 2);
+        }
+        mx := mx * mx;
+        mn := mn / 2;
+    }
+    assert PowerH(mx, mn) == 1;
+}
+
+
+// Iterative computation of x^n mod m in time O(log n), 
+// by the fast modular exponentiation algorithm, avoiding overflows.
+method FastModularExponentiation(x: nat, n: nat, m: nat) returns (res: nat) 
+  requires m > 0
+  ensures res == ModPowerH(x % m, n, m)
+  ensures m > 1 ==> res < m
+{
+    if m == 1 {
+        return 0; // x^n % 1 == 0
+    }
+
+    var mn: nat := n; // remaining exponent
+
+
+    var mx2: nat := x % m; // remaining base for computing Power(x, n) % m (the same as mx % m)
+    var p2 : nat := 1; // partial result for computing Power(x, n) % m (is the same as p % m)
+
+    while mn > 0 
+      invariant m > 1
+      invariant 0 <= mn
+      invariant 0 <= mx2 < m
+      invariant 0 <= p2 < m
+      invariant (p2 * ModPowerH(mx2, mn, m)) % m == ModPowerH(x % m, n, m)
+    {
+        if mn % 2 == 1 {
+            assert ModPowerH(mx2, mn, m) == ((mx2 % m) * ModPowerH((mx2 * mx2) % m, mn / 2, m)) % m;
+            p2 := (p2 * mx2) % m;
+        } else {
+            assert ModPowerH(mx2, mn, m) == ModPowerH((mx2 * mx2) % m, mn / 2, m);
+        } 
+        mn := mn / 2;
+        mx2 := (mx2 * mx2) % m;
+    }
+    
+    return p2;
+}
+
+
+
+
+// A few test cases (checked statically by Dafny).
+method TestModularExponentiation() {
+    var p1 := FastExponentiation(2, 10);
+    assert p1 == 1024;
+
+    var p2 := FastModularExponentiation(2, 10, 7);
+    assert p2 == 2;
+
+    var p3 := FastExponentiation(10, 6);
+    assert p3 == 1000000;
+
+    var p4 := FastModularExponentiation(10, 6, 9);
+    assert p4 == 1;
+
+    var p5 := FastModularExponentiation(1000, 1000, 1);
+    assert p5 == 0;
+}

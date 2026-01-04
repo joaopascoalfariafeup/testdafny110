@@ -1,0 +1,37 @@
+// Checks if all elements in an array are equal to a given number.
+method AllElementsEqualTo<T(==)>(a: array<T>, x: T) returns (result: bool)
+  requires a != null
+  ensures result <==> (forall i :: 0 <= i < a.Length ==> a[i] == x)
+  ensures !result <==> (exists i :: 0 <= i < a.Length && a[i] != x)
+{
+  for i := 0 to a.Length
+    invariant a != null
+    invariant 0 <= i <= a.Length
+    invariant forall j :: 0 <= j < i ==> a[j] == x
+  {
+    if a[i] != x {
+      assert 0 <= i < a.Length;
+      assert exists k :: 0 <= k < a.Length && a[k] != x; // witness k := i
+      return false;
+    }
+    assert a[i] == x;
+  }
+  return true;
+}
+
+method AllElementsEqualTest(){
+  var a1:= new int[] [1, 3, 5, 7, 9, 2, 4, 6, 8];
+  assert a1[0] == 1;
+  assert a1[0] != 3;
+  var res1:=AllElementsEqualTo(a1, 3);
+  assert !res1;
+
+  var a2:= new int[] [1,1,1,1,1,1,1];
+  var res2:=AllElementsEqualTo(a2, 1);
+  assert res2;
+
+  var a3 := new int[] [5,6,7,4,8];
+  var res3 := AllElementsEqualTo(a3, 6);
+  assert a3[2] != 6;
+  assert !res3;
+}
