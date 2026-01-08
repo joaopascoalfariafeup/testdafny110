@@ -65,7 +65,7 @@ Directory containing multiple subdirectories, each corresponding to a specific:
 - large language model, and
 - configuration (e.g., temperature or reasoning level),
 
-and holding the generated annotations produced using the **direct prompting** strategy.
+and holding the generated solutions (annotated programs) produced using the **direct prompting** strategy.
 
 ---
 
@@ -74,7 +74,7 @@ Directory containing multiple subdirectories, each corresponding to a specific:
 - large language model, and
 - configuration or repair variant (including negative tests and multi-model selection),
 
-and holding the generated annotations produced using the **repair prompting** strategy.
+and holding the generated solutions (annotated programs) produced using the **repair prompting** strategy.
 
 ---
 
