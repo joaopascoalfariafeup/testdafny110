@@ -92,7 +92,7 @@ def get_removable_code_fragment(lines: list[str], start_index: int) -> int:
     declaration_initiators2 = declaration_initiators + ["method"]
 
     # if this line initiates a composite statement with {}, search for end of block (closing braces)
-    block_initiators = ["calc ", "forall ", "if ", "calc{", "if(", "for ", "while ", "while("]
+    block_initiators = ["calc ", "forall ", "if ", "calc{", "else", "if(", "for ", "while ", "while("]
     if any(line.startswith(token) for token in block_initiators):
         open_brace_count = 0
         close_brace_count = 0
