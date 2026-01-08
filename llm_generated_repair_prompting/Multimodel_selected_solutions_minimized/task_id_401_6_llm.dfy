@@ -16,10 +16,12 @@ ghost function {:fuel 5} DeepElementWiseAdditionSpec(a: seq<seq<int>>, b: seq<se
 method DeepElementWiseAddition(a: seq<seq<int>>, b: seq<seq<int>>) returns (result: seq<seq<int>>)
   requires |a| == |b|
   requires forall i :: 0 <= i < |a| ==> |a[i]| == |b[i]|
+  ensures |result| == |a|
   ensures result == DeepElementWiseAdditionSpec(a, b)
 {
   result := [];
   for i := 0 to |a|
+    invariant |result| == i
     invariant result == DeepElementWiseAdditionSpec(a[..i], b[..i])
   {
     var subResult := ElementWiseAddition(a[i], b[i]);
@@ -64,15 +66,9 @@ method IndexWiseAdditionTest(){
   assert ElementWiseAdditionSpec([2, 9, 1], [1, 1, 8]) == [3, 10, 9];
   
   
-  assert [[4]][..0] == [] && [[2]][..0] == [];
   
-  assert [[4], [1, 3]][..1] == [[4]];
-  assert [[2], [6, 7]][..1] == [[2]];
   
-  assert [[4], [1, 3], [2, 9, 1]][..2] == [[4], [1, 3]];
-  assert [[2], [6, 7], [1, 1, 8]][..2] == [[2], [6, 7]];
   
-  assert s1[..3] == [[4], [1, 3], [2, 9, 1]];
   assert s2[..3] == [[2], [6, 7], [1, 1, 8]];
   
   // now the full assertion

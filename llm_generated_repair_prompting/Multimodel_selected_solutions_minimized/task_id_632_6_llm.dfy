@@ -83,6 +83,7 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
             if nz < i {
                 a[nz], a[i] := a[i], a[nz]; // swap non-zero element to the left
             }
+            assert a[..nz+1] == a[..nz] + [a[nz]];
             nz := nz + 1; // increment number of non-zero elements
         } else {
             assert original[..i+1] == original[..i] + [original[i]];
@@ -93,6 +94,7 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
     NonZeroElementsOfZero(a[nz..]);
     assert a[..] == a[..nz] + a[nz..];
     NonZeroElementsConcat(a[..nz], a[nz..]);
+    assert NonZeroElements(a[nz..]) == [];
 }
 
 

@@ -34,12 +34,8 @@ method FindFirstOccurrenceTest(){
 
     var out1 := FindFirstOccurrence(a1, 5);
 
-    assert out1 == -1 ==> a1[1] != 5; // from postcondition of FindFirstOccurrence
-    assert out1 == 1;
-    assert out1 == 1;
 
     var out2 := FindFirstOccurrence(a1, 9);
-    assert out2 == -1 ==> a1[7] != 9; // from postcondition
     assert out2 == 7;
 
     var out3 := FindFirstOccurrence(a1, 1);

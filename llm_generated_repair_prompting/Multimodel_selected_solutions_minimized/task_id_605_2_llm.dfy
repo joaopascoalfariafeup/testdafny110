@@ -20,12 +20,6 @@ method IsPrime(n: nat) returns (result: bool)
             return false;
         }
     }
-    if n == 2 {
-        return true;
-    }
-    forall d | n/2 + 1 <= d < n
-    {
-    }
     return true;
 }
 

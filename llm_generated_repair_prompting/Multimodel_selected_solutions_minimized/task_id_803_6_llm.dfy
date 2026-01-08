@@ -13,7 +13,8 @@ lemma SquareMonotone(a: nat, b: nat)
 
   calc {
     b * b;
-    == { } a * a + 2 * a * d + d * d;
+    == { }
+    a * a + 2 * a * d + d * d;
   }
 }
 
@@ -22,7 +23,8 @@ lemma SquareMonotone(a: nat, b: nat)
 lemma PerfectSquareOf(k: nat)
   ensures PerfectSquare(k * k)
 {
-  assert exists w: nat :: w * w == k * k by { var w := k;
+  assert exists w: nat :: w * w == k * k by {
+    var w := k;
     assert w * w == k * k;
   }
 }
@@ -43,7 +45,12 @@ method IsPerfectSquare(n: nat) returns(result: bool)
     return true;
   } else {
 
-    assert forall k: nat :: k * k != n by { forall k: nat ensures k * k != n { if k < i { // use loop invariant
+    assert forall k: nat :: k * k != n by
+    {
+      forall k: nat
+        ensures k * k != n
+      {
+        if k < i {
         } else {
           SquareMonotone(i, k);
         }

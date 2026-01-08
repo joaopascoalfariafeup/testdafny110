@@ -30,7 +30,11 @@ lemma SortedMultisetUniqueHelper(s1: seq<T>, s2: seq<T>)
     ensures s1 == s2
 {
     var m2 := s2[0];
+    
+    
     assert m2 in multiset(s1);
+    
+    
     if |s1| > 1 {
         assert s1 == [s1[0]] + s1[1..];
         assert s2 == [s2[0]] + s2[1..];

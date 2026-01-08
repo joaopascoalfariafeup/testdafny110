@@ -3,7 +3,6 @@
 * Fibonacci numbers applying dynamic programming.
 */
 
-// Ghost function for Fibonacci specification
 ghost function Fib(n: nat): nat
 {
     if n == 0 then 0
@@ -34,4 +33,3 @@ method TestFib()
   var f2 := CalcFib(2); assert f2 == 1;
   var f5 := CalcFib(5); assert f5 == 5;
 }
-

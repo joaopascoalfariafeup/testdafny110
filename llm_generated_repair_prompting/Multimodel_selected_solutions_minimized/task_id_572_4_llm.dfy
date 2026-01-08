@@ -35,6 +35,9 @@ lemma ExtendLemma<T>(s: seq<T>, start: int, end: int)
   decreases end - start
 {
   if start == end {
+    if s[end] in s[..end] {
+    } else {
+    }
   } else if s[start] in s[..start] {
     ExtendLemma(s, start+1, end);
   } else {

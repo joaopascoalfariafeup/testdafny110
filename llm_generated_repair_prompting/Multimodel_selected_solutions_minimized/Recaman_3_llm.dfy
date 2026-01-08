@@ -55,7 +55,8 @@ method Recaman(n: nat) returns (res: nat)
         var x  := a[i-1] - i;
         if x > 0 {
             var c := Contains(x, a, i);
-            assert c <==> InSeq(x, prevSeq) by { assert forall k :: 0 <= k < i ==> a[k] == prevSeq[k];
+            assert c <==> InSeq(x, prevSeq) by {
+                assert forall k :: 0 <= k < i ==> a[k] == prevSeq[k];
             }
             if ! c {
                 a[i] := x;

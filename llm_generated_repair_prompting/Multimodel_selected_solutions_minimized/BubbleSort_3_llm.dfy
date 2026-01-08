@@ -3,23 +3,22 @@
 * The algorithm was taken from https://en.wikipedia.org/wiki/Bubble_sort .
 */
 
-// Predicate to check if a sequence is sorted
 ghost predicate Sorted(s: seq<int>)
 {
   forall i, j :: 0 <= i < j < |s| ==> s[i] <= s[j]
 }
 
-// Predicate to check if one sequence is a permutation of another
 ghost predicate SameMultiset(s1: seq<int>, s2: seq<int>)
 {
   multiset(s1) == multiset(s2)
 }
 
-// Predicate to check if all elements in s1 are <= all elements in s2
 ghost predicate AllLessOrEqual(s1: seq<int>, s2: seq<int>)
 {
   forall i, j :: 0 <= i < |s1| && 0 <= j < |s2| ==> s1[i] <= s2[j]
 }
+
+
 
 // Sorts array 'a' inplace using the bubble sort algorithm.
 method BubbleSort(a: array<int>)

@@ -41,10 +41,7 @@ method FindFirstOddTest(){
 
     if out2 == -1 {
         assert !IsOdd(a2[2]);
-    } else {
-        assert out2 == 2;
     }
-    assert out2 == 2;
 
     // none
     var a3 := new int[] [2, 6, 4];

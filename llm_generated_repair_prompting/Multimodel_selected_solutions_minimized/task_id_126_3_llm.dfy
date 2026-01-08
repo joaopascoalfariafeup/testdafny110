@@ -1,13 +1,11 @@
 // Returns the sum of the common divisors of two positive integers.
 
 ghost function commonDivisors(a: nat, b: nat): seq<nat>
-  requires a > 0 && b > 0
 {
   commonDivisorsUpTo(a, b, if a <= b then a else b)
 }
 
 ghost function commonDivisorsUpTo(a: nat, b: nat, k: nat): seq<nat>
-  requires a > 0 && b > 0
 {
   if k == 0 then []
   else if a % k == 0 && b % k == 0 then commonDivisorsUpTo(a, b, k - 1) + [k]
@@ -21,7 +19,6 @@ ghost function sumSeq(s: seq<nat>): nat
 }
 
 ghost function sumOfCommonDivisorsUpTo(a: nat, b: nat, k: nat): nat
-  requires a > 0 && b > 0
 {
   if k == 0 then 0
   else if a % k == 0 && b % k == 0 then k + sumOfCommonDivisorsUpTo(a, b, k - 1)
@@ -48,7 +45,6 @@ method SumOfCommonDivisors(a: nat, b: nat) returns (sum: nat)
 }
 
 lemma SumEquivalenceLemma(a: nat, b: nat, k: nat)
-  requires a > 0 && b > 0
   ensures sumOfCommonDivisorsUpTo(a, b, k) == sumSeq(commonDivisorsUpTo(a, b, k))
 {
 }
@@ -57,11 +53,6 @@ lemma SumSeqLemma(s: seq<nat>)
 {
 }
 
-lemma SumSeqLemma4(s: seq<nat>)
-  requires |s| == 4
-{
-  
-}
 
 // Test cases checked statically
 method SumOfCommonDivisorsTest(){
@@ -72,7 +63,7 @@ method SumOfCommonDivisorsTest(){
   
   var out2 := SumOfCommonDivisors(10, 20);
   assert commonDivisors(10, 20) == [1, 2, 5, 10];
-  SumSeqLemma4([1, 2, 5, 10]);
+  assert sumSeq([1, 2, 5, 10]) == 18;
   assert out2 == 18;
   
   var out3 := SumOfCommonDivisors(4,6);

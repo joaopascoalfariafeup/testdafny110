@@ -19,6 +19,8 @@ method IsGreaterTest(){
 
 
     var out1 := IsGreater(4, a1);
+    assert !(4 > a1[3]); // since a1[3] == 5
+    assert !out1;
 
     var out2 := IsGreater(6, a1);
     assert out2;

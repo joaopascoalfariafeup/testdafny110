@@ -70,9 +70,14 @@ lemma SwapDecreasesInversions(a: array<T>, i: int, j: int, oldSeq: seq<T>)
    var oldInvSet := SeqInversionSet(oldSeq);
    var newInvSet := InversionSet(a);
    
+   
+   
+   
    var oldMinusIJ := oldInvSet - {(i, j)};
    
    var mapF := (pair: (int, int)) => MapNewToOld(pair, i, j, oldSeq, newSeq);
+   
+   
    
    InjectiveMapBound(newInvSet, oldMinusIJ, mapF);
 }

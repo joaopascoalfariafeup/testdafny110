@@ -12,6 +12,7 @@ function MaxNat(x: nat, y: nat): nat
 }
 
 
+
 function RunLenEndingAt(s: seq<int>, n: nat): nat
   requires 0 < n <= |s|
 {

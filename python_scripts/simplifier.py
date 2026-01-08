@@ -80,22 +80,25 @@ def verify_dafny_file(filepath, handle_negative_tests=handle_negative_tests) -> 
 # - assertions starting with assert and ending with ';'
 # - equalities (inside calculational proofs) starting with '==' and ending with ';'
 # - single lines otherwise (excluding empty lines, single braces, pairs of braces)
-def get_removable_code_fragment(lines: list[str], start_index: int) -> int:
+def get_removable_code_fragment(lines: list[str], start_index: int) -> tuple[int, str|None]:
     line = lines[start_index].strip()
 
     # ignore empty lines or single braces or pairs of braces
-    if line == "" or line == "{" or line == "}" or re.sub(r'\s+', '', line) == "{}" or line.startswith("}"):
-        return start_index - 1
+    if line == "" or line == "{" or line == "}" or re.sub(r'\s+', '', line) == "{}" :
+        return start_index - 1, None
 
     # declaration initiators
     declaration_initiators = ["function", "lemma", "predicate", "ghost function", "ghost predicate"]
     declaration_initiators2 = declaration_initiators + ["method"]
 
     # if this line initiates a composite statement with {}, search for end of block (closing braces)
-    block_initiators = ["calc ", "forall ", "if ", "calc{", "else", "if(", "for ", "while ", "while("]
+    block_initiators = ["calc ", "forall ", "if ", "else", "calc{", "if(", "for ", "while ", "while(", "by ", "} else"]
     if any(line.startswith(token) for token in block_initiators):
+        if line.startswith("}"):
+            close_brace_count = -1
+        else:
+            close_brace_count = 0
         open_brace_count = 0
-        close_brace_count = 0
         for i in range(start_index, len(lines)):
             line_to_check = lines[i]
             # if starts with a declaration initiator, aborts
@@ -114,15 +117,21 @@ def get_removable_code_fragment(lines: list[str], start_index: int) -> int:
             if (open_brace_count == close_brace_count and open_brace_count > 0
             and not "else" in line_to_check 
             and not (i < len(lines)-1 and "else" in lines[i+1])):
-                return i
-    
+                replace_with = None
+                if line.startswith("} else"):
+                    # tells that, after removing, has to insert "}" with leading original spaces
+                    replace_with = re.match(r'^\s*', lines[start_index]).group(0) + "}"
+                if line.startswith("by "):
+                    # tells that, after removing, has to insert ";" 
+                    replace_with = re.match(r'^\s*', lines[start_index]).group(0) + ";"
+                return i, replace_with
     # if this line initiates a statement that ends with ';', check end of statement
     if (line.startswith("assert ") or line.startswith("==")) and not line.endswith(";") and not "//" in line:
         i = start_index + 1
         while i < len(lines) and not (lines[i].strip().endswith(";") or "//" in lines[i]):
             i += 1
         if i < len(lines):
-            return i
+            return i, None
 
     # if this line initiates a declaration, find end of declaration
     if any(line.startswith(token) for token in declaration_initiators):
@@ -145,10 +154,14 @@ def get_removable_code_fragment(lines: list[str], start_index: int) -> int:
             open_brace_count += line_to_check.count('{')
             close_brace_count += line_to_check.count('}')
             if open_brace_count == close_brace_count and open_brace_count > 0:
-                return i
+                return i, None
 
+    # avoid removing closing braces alone
+    if line.startswith("}"):
+        return start_index, None
+    
     # otherwise, try this single line
-    return start_index
+    return start_index, None
 
    
 # Simplify a Dafny file by removing lines not present in the original file and checking it still verifies.
@@ -216,7 +229,7 @@ def simplify(original_file: str, modified_file: str, simplified_file: str, start
 
         # if not found, try to remove a block or statement starting at this line
         start_index = k
-        end_index = get_removable_code_fragment(modified_lines, start_index)
+        end_index, replace_with = get_removable_code_fragment(modified_lines, start_index)
         if end_index < start_index:
             k += 1
             continue
@@ -226,20 +239,22 @@ def simplify(original_file: str, modified_file: str, simplified_file: str, start
         remove_segment = "\n".join(new_lines[start_index:end_index+1])
         del new_lines[start_index:end_index+1]
 
+        # if need to replace with something, do it
+        if replace_with is not None:
+            new_lines.insert(start_index, replace_with)
+
         # save to simplified file 
         with open(simplified_file, 'w', encoding='utf-8') as file:
             file.write("\n".join(new_lines))
 
-        # check if the simplified file verifies (unless it's just a comment)
+        # check if the simplified file failes verification
         if not (end_index == start_index and remove_segment.strip().startswith("//")):
-            # try to verify
-            success = verify_dafny_file(simplified_file, handle_negative_tests=contains_negative_tests)
-            # if failed, continue in next line
+            success = verify_dafny_file(simplified_file, handle_negative_tests=contains_negative_tests) 
             if success != 1:
                 print("Could not remove segment: " + remove_segment)
                 k += 1
-                continue
-
+                continue           
+            
         # if successful, update modified_lines with new_lines, and continue on same index
         modified_lines = new_lines
         print(f"Removed not needed segment: {remove_segment}")
@@ -332,6 +347,7 @@ def simplify_folder(folder_with_stripped_files: str, folder_with_modified_files:
     # print total results
     print(f"Total simplified files: {total_simplified_files}, total removed lines: {total_removed_lines}")
     return total_simplified_files, total_removed_lines
+
 
 
 simplify_folder(r"TODO", r"TODO", r"TODO")

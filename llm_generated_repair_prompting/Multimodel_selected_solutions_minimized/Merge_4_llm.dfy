@@ -13,6 +13,12 @@ function {:fuel 50} MergeSeq(sa: seq<int>, sb: seq<int>): seq<int>
 }
 
 
+
+
+
+
+
+
 // Merges two sorted arrays 'a' and 'b' into a new sorted array 'c'.
 method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
   requires Sorted(a[..])
@@ -31,8 +37,11 @@ method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
         var oi := i;
         var oj := j;
 
+
         if i < a.Length && (j == b.Length  || a[i] <= b[j])  {
             c[j + i] := a[i];
+
+
 
             calc {
               c[..((oi+1)+oj)] + MergeSeq(a[(oi+1)..], b[oj..]);
@@ -42,6 +51,7 @@ method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
         } 
         else {
             c[i + j] := b[j];
+
 
 
             calc {
@@ -58,7 +68,8 @@ method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
 
 lemma MergeSeq_Example_135_24()
   ensures MergeSeq([1,3,5], [2,4]) == [1,2,3,4,5]
-{ }
+{
+}
 
 method TestMerge() {
     var a: array<int> := new int[] [1, 3, 5];

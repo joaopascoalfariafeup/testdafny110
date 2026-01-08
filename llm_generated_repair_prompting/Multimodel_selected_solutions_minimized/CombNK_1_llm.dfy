@@ -38,6 +38,10 @@ method CalcComb(n: nat, k: nat) returns (res: nat)
 
       c[j] := c[j] + c[j-1];   
 
+
+
+
+
       // At this point c[j] contains Comb(j+i, i)
     } 
   }

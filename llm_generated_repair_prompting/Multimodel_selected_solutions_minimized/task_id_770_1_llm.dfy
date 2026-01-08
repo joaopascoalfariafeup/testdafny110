@@ -1,4 +1,3 @@
-// Ghost function to compute the sum of fourth powers of first n odd numbers
 ghost function SumFourthPowerOdd(n: nat): nat
 {
     if n == 0 then 0

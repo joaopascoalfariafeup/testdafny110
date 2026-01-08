@@ -1,5 +1,4 @@
 
-// Ghost function to compute the sum of digits recursively
 ghost function SumOfDigits(n: nat): nat
 {
     if n == 0 then 0
