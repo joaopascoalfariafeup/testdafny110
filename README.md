@@ -48,6 +48,7 @@ The package includes the dataset, experimental results, scripts, and analysis ar
     ├── analysis_of_success_factors.py
     ├── generator.py
     └── simplifier.py
+```
 
 ## Folder Descriptions
 
