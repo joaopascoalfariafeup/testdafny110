@@ -20,13 +20,13 @@ method MaxLengthListTest(){
   // typical case
   var s1: seq<seq<int>> := [[0], [1, 3], [5, 7], [9, 11], [13, 15, 17]];
   var res1 := MaxLengthSublist(s1);
-  assert |res1| >= |s1[4]| || res1 == s1[4];
+  assert |s1[4]| == 3;
   assert res1 == [13, 15, 17];
 
   // multiple solutions
   var s2: seq<seq<int>> := [[1], [5, 7], [3, 12]];
   var e2: seq<int> := [10, 12, 14,15];
   var res2 := MaxLengthSublist(s2);
-  assert |s2[2]| == 2;
+  assert |s2[1]| == 2;
   assert res2 == [5, 7] || res2 == [3, 12]; 
 }

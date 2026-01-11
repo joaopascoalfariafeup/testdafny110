@@ -38,3 +38,4 @@ method SmallestMissingNumberTest() {
   assert 0 !in a3;
   assert out3 == 0;
 }
+

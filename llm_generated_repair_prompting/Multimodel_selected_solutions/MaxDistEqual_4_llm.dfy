@@ -70,8 +70,8 @@ lemma MaxDistEqualInRangeCorrect<T(==)>(a: seq<T>, upToI: nat)
 }
 
 method MaxDistEqual<T(==)>(a: array<T>) returns (maxDist: nat)
-  ensures maxDist == MaxDistEqualInRange(a[..], a.Length)
   ensures IsMaxDistEqual(a[..], maxDist)
+  ensures maxDist == MaxDistEqualInRange(a[..], a.Length)
 {
   maxDist := 0;
   for i := 0 to a.Length

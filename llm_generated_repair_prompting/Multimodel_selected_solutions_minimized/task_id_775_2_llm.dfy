@@ -25,8 +25,8 @@ method IsOddAtIndexOddTest(){
   var a2 := new int[] [1, 2, 3];
   var out2 := IsOddAtIndexOdd(a2);
 
+  assert a2[1] == 2;
 
-  assert out2 ==> IsOdd(a2[1]);
 
   assert !out2;
 }

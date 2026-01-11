@@ -3,14 +3,15 @@
 // That is, there is no even number preceding an odd number. 
 method PartitionOddEven(a: array<nat>) 
   modifies a
+  ensures forall k :: 0 <= k < a.Length ==> a[k] in multiset(old(a[..]))
+  ensures forall k :: 0 <= k < a.Length ==> old(a[k]) in multiset(a[..])
   ensures forall k, l :: 0 <= k < l < a.Length ==> !(IsEven(a[k]) && IsOdd(a[l]))
-  ensures multiset(a[..]) == multiset(old(a[..]))
 {
     var i := 0; // odd numbers are placed to the left of i
     var j := a.Length - 1; // even numbers are placed to the right of j
     while i <= j
+      invariant 0 <= i <= a.Length
       invariant -1 <= j < a.Length
-      invariant i <= j + 1
       invariant forall k :: 0 <= k < i ==> IsOdd(a[k])
       invariant forall k :: j < k < a.Length ==> IsEven(a[k])
       invariant multiset(a[..]) == multiset(old(a[..]))

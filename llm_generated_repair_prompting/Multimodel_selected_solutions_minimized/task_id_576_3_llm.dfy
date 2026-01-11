@@ -38,8 +38,8 @@ method IsSublistTest(){
 
     var r1 := IsSublist(a1, a0);
     assert a0[0..2] == [1, 0];
-    assert !SubseqAt(a1, a0, 0);
-    assert !SubseqAt(a1, a0, 1);
+    assert a0[1..3] == [0, 2];
+    assert a0[2..4] == [2, 2];
     assert !r1; 
 
     var r2 := IsSublist(a2, a0);

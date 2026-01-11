@@ -18,7 +18,8 @@ method LongestPrefix(a: array<int>, b: array <int>) returns (i: nat)
 method testLongestPrefix() {
     var a := new int[] [1, 3, 2, 4, 8];
     var b := new int[] [1, 3, 3, 4];
+    assert a[0] == 1 && a[1] == 3 && a[2] == 2;
     var i := LongestPrefix(a, b);
-    assert a[2] != b[2];
+    assert a[0] == b[0] && a[1] == b[1];
     assert i == 2; 
 }

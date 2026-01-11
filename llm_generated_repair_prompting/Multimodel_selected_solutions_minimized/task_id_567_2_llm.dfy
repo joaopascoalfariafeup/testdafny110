@@ -5,11 +5,6 @@ predicate ArrSorted(a: array<int>)
   forall i :: 0 <= i < a.Length - 1 ==> a[i] <= a[i+1]
 }
 
-lemma NotArrSortedByWitness(a: array<int>, i: int)
-  requires 0 <= i < a.Length - 1
-  requires a[i] > a[i+1]
-{
-}
 
 method IsSortedArr(a: array<int>) returns (sorted: bool)
   ensures sorted <==> ArrSorted(a)
@@ -33,7 +28,7 @@ method IsSortedTest(){
   assert out1;
 
   var a2 := new int[] [1, 2, 4, 3, 6];
-  NotArrSortedByWitness(a2, 2);
+  assert a2[2] == 4 && a2[3] == 3;
 
   var out2 := IsSortedArr(a2);
   assert ! out2;

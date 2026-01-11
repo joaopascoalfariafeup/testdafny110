@@ -19,7 +19,7 @@ method AllCharactersSame(s: string) returns (result: bool)
 // Test cases checked statically.
 method AllCharactersSameTest(){
     var s1 := "axa";
-    assert s1[0] != s1[1]; // helper assertion showing distinct characters exist
+    assert s1[0] == 'a' && s1[1] == 'x'; // helper assertion
     var r1 := AllCharactersSame(s1); 
     assert ! r1;
 

@@ -16,7 +16,8 @@ method SmallestListLength<T>(s: seq<seq<T>>) returns (v: int)
 {
   v := |s[0]|;
   for i := 1 to |s|
-    invariant v == minLen(s[..i])
+    invariant forall j :: 0 <= j < i ==> v <= |s[j]|
+    invariant exists j :: 0 <= j < i && v == |s[j]|
   {
     if |s[i]| < v {
       v := |s[i]|;

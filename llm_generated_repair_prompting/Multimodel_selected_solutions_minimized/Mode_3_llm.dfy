@@ -15,6 +15,7 @@ function MaxNat(x: nat, y: nat): nat
 
 function RunLenEndingAt(s: seq<int>, n: nat): nat
   requires 0 < n <= |s|
+  decreases n
 {
   if n == 1 then 1
   else if s[n-1] == s[n-2] then 1 + RunLenEndingAt(s, n-1)
@@ -23,9 +24,9 @@ function RunLenEndingAt(s: seq<int>, n: nat): nat
 
 function MaxRunLen(s: seq<int>, n: nat): nat
   requires n <= |s|
-  decreases n
 {
   if n == 0 then 0
+  else if n == 1 then 1
   else MaxNat(MaxRunLen(s, n-1), RunLenEndingAt(s, n))
 }
 

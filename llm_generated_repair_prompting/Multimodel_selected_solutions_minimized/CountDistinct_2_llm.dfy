@@ -24,6 +24,7 @@ method CountDistinct(a: array<int>) returns (count: nat)
         if a[i] != a[i-1] {
             count := count + 1;
         }
+
     }
     assert a[..a.Length] == a[..];
     return count;

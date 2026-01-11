@@ -5,57 +5,40 @@ ghost predicate PerfectSquare(n: nat)
 }
 
 
-lemma SquareMonotone(a: nat, b: nat)
-  requires a <= b
-  ensures a * a <= b * b
-{
-  var d: nat := b - a;
-
-  calc {
-    b * b;
-    == { }
-    a * a + 2 * a * d + d * d;
-  }
-}
 
 
 
 lemma PerfectSquareOf(k: nat)
   ensures PerfectSquare(k * k)
 {
-  assert exists w: nat :: w * w == k * k by {
-    var w := k;
-    assert w * w == k * k;
-  }
 }
 
+lemma NotPerfectSquareBetween(k: nat, n: nat)
+  requires k * k < n < (k + 1) * (k + 1)
+{
+}
 
 method IsPerfectSquare(n: nat) returns(result: bool)
   ensures result <==> PerfectSquare(n)
 {
   var i: nat := 0;
   while i * i < n
+    invariant i <= n
     invariant forall k: nat :: k < i ==> k * k < n
   {
     i := i + 1;
   }
 
+  assert i * i >= n;
 
   if i * i == n {
+    var k: nat := i;
+    assert k * k == n;
+    assert PerfectSquare(n);
     return true;
   } else {
+    assert i * i > n;
 
-    assert forall k: nat :: k * k != n by
-    {
-      forall k: nat
-        ensures k * k != n
-      {
-        if k < i {
-        } else {
-          SquareMonotone(i, k);
-        }
-      }
-    }
 
     return false;
   }
@@ -70,11 +53,11 @@ method IsPerfectSquareTest(){
     PerfectSquareOf(1);
     r := IsPerfectSquare(1); assert r;
     
+    NotPerfectSquareBetween(1, 2);
     r := IsPerfectSquare(2); assert !r;
 
     r := IsPerfectSquare(3); assert !r;
 
-    PerfectSquareOf(2);
     r := IsPerfectSquare(4); assert r;
 
     r := IsPerfectSquare(1000001); assert !r;

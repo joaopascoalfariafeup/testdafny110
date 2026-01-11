@@ -31,7 +31,7 @@ method IsPrimeTest(){
  
     // non-prime number
     var out2 := IsPrime(1010);
-    assert 2 >= 2 && 2 < 1010 && 2 > 0 && 1010 % 2 == 0;
+    assert 1010 % 2 == 0;
     assert !out2;
 
     // large prime number

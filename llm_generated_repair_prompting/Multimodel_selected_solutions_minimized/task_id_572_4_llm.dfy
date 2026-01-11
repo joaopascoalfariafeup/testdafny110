@@ -42,6 +42,8 @@ lemma ExtendLemma<T>(s: seq<T>, start: int, end: int)
     ExtendLemma(s, start+1, end);
   } else {
     ExtendLemma(s, start+1, end);
+    if s[end] in s[..end] {
+    }
   }
 }
 

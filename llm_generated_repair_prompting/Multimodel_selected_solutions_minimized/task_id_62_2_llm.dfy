@@ -20,19 +20,19 @@ method FindSmallest(s: array<int>) returns (min: int)
 method FindSmallestTest(){
   // sorted array
   var a1 := new int[] [1, 2, 3];
+  assert a1[0] == 1 && a1[1] == 2 && a1[2] == 3;
   var out1 := FindSmallest(a1);
-  assert a1[0] == 1;
   assert out1 == 1;
 
   // unsorted array
   var a2 := new int[] [3, 2, 1, 4];
+  assert a2[0] == 3 && a2[1] == 2 && a2[2] == 1 && a2[3] == 4;
   var out2 := FindSmallest(a2);
-  assert a2[2] == 1;
   assert out2 == 1;
 
   // unsorted array with duplicate elements
   var a3 := new int[] [3, 3, 1, 4, 1];
+  assert a3[0] == 3 && a3[1] == 3 && a3[2] == 1 && a3[3] == 4 && a3[4] == 1;
   var out3 := FindSmallest(a3);
-  assert a3[2] == 1;
   assert out3 == 1;
 }

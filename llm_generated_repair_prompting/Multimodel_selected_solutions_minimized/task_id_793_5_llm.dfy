@@ -27,10 +27,10 @@ method LastPositionTest(){
 
     var out1 := LastPosition(a1, 1);
     assert a1[0] == 1 && a1[1] == 1 && a1[2] == 1 && a1[3] == 2;
+    assert a1[3] > 1 && a1[4] > 1 && a1[5] > 1 && a1[6] > 1;
     assert out1 == 2;
 
     var out2 := LastPosition(a1, 4);
-    assert a1[6] == 4;
     assert out2 == 6;
 
     var out3 := LastPosition(a1, 5);

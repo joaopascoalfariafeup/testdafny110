@@ -22,7 +22,7 @@ method AllSequencesEqualLengthTest(){
     assert res1;
     
     var s2: seq<seq<int>> :=[[1, 2, 3], [4, 5, 6, 7]];
-    assert |s2[0]| != |s2[1]|;
+    assert |s2[1]| == 4;
     var res2:=AllSequencesEqualLength(s2);
     assert !res2;
     

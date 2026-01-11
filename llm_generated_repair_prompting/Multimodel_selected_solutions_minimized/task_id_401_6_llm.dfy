@@ -5,32 +5,21 @@ ghost function {:fuel 5} ElementWiseAdditionSpec(a: seq<int>, b: seq<int>): seq<
   else ElementWiseAdditionSpec(a[..|a|-1], b[..|b|-1]) + [a[|a|-1] + b[|b|-1]]
 }
 
-ghost function {:fuel 5} DeepElementWiseAdditionSpec(a: seq<seq<int>>, b: seq<seq<int>>): seq<seq<int>>
-  requires |a| == |b|
-  requires forall i :: 0 <= i < |a| ==> |a[i]| == |b[i]|
-{
-  if |a| == 0 then []
-  else DeepElementWiseAdditionSpec(a[..|a|-1], b[..|b|-1]) + [ElementWiseAdditionSpec(a[|a|-1], b[|a|-1])]
-}
 
 method DeepElementWiseAddition(a: seq<seq<int>>, b: seq<seq<int>>) returns (result: seq<seq<int>>)
   requires |a| == |b|
   requires forall i :: 0 <= i < |a| ==> |a[i]| == |b[i]|
   ensures |result| == |a|
-  ensures result == DeepElementWiseAdditionSpec(a, b)
+  ensures forall i :: 0 <= i < |result| ==> result[i] == ElementWiseAdditionSpec(a[i], b[i])
 {
   result := [];
   for i := 0 to |a|
     invariant |result| == i
-    invariant result == DeepElementWiseAdditionSpec(a[..i], b[..i])
+    invariant forall j :: 0 <= j < i ==> result[j] == ElementWiseAdditionSpec(a[j], b[j])
   {
     var subResult := ElementWiseAddition(a[i], b[i]);
-    assert a[..i+1] == a[..i] + [a[i]];
-    assert b[..i+1] == b[..i] + [b[i]];
     result := result + [subResult];
   }
-  assert a[..|a|] == a;
-  assert b[..|b|] == b;
 }
 
 
@@ -69,7 +58,6 @@ method IndexWiseAdditionTest(){
   
   
   
-  assert s2[..3] == [[2], [6, 7], [1, 1, 8]];
   
   // now the full assertion
   assert res1 == [[6], [7, 10], [3, 10, 9], []];

@@ -63,9 +63,9 @@ method SecondSmallest(s: array<int>) returns (smallest: int, secondSmallest: int
 // Test cases checked statically.
 method SecondSmallestTest(){
     var a1:= new int[] [1, 2, -8, -2, -2, -8];
+    assert a1[..] == [1, 2, -8, -2, -2, -8];
     assert a1[0] != a1[2];
     var s1, out1 := SecondSmallest(a1);
-    assert out1 <= a1[3] && a1[3] <= out1;
     assert  s1 == -8 && out1 == -2;
 
     var a2:= new int[] [2, 2, 1];

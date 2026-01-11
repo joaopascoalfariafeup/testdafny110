@@ -12,6 +12,9 @@ function {:fuel 50} MergeSeq(sa: seq<int>, sb: seq<int>): seq<int>
   else [sb[0]] + MergeSeq(sa, sb[1..])
 }
 
+lemma SeqAssoc<T>(x: seq<T>, y: seq<T>, z: seq<T>)
+{
+}
 
 
 
@@ -43,9 +46,6 @@ method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
 
 
 
-            calc {
-              c[..((oi+1)+oj)] + MergeSeq(a[(oi+1)..], b[oj..]);
-            }
 
             i := i + 1;
         } 
@@ -56,13 +56,15 @@ method Merge(a: array<int>, b: array<int>) returns (c: array<int>)
 
             calc {
               c[..(oi+(oj+1))] + MergeSeq(a[oi..], b[(oj+1)..]);
+              == { SeqAssoc(c[..(oi+oj)], [b[oj]], MergeSeq(a[oi..], b[oj+1..])); }
+              c[..(oi+oj)] + ([b[oj]] + MergeSeq(a[oi..], b[oj+1..]));
+              == { assert c[..oi+oj] + MergeSeq(a[oi..], b[oj..]) == MergeSeq(a[..], b[..]); }
             }
 
             j := j + 1;
         }
     }
 
-    assert c[..] == MergeSeq(a[..], b[..]);
 
 }
 

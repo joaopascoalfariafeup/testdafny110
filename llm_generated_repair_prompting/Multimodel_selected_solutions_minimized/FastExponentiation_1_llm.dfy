@@ -13,10 +13,7 @@ lemma PowSquare(x: real, n: nat)
 {
   if n == 0 {
   } else {
-    calc {
-      Pow(x * x, n);
-      == (x * x) * Pow(x, 2 * (n - 1));
-    }
+    PowSquare(x, n - 1);
   }
 }
 
@@ -25,6 +22,8 @@ lemma PowDecompose(x: real, n: nat)
   ensures n % 2 == 0 ==> Pow(x, n) == Pow(x * x, n / 2)
 {
   PowSquare(x, n / 2);
+  if n % 2 == 1 {
+  }
 }
 
 method FastExponentiation(x: real, n: nat) returns (p: real)

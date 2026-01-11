@@ -27,14 +27,14 @@ method FindFirstRepeatedChar(s: string) returns (found: bool, c: char)
 method FindFirstRepeatedCharTest(){
     // First character is repeated
     var s1 := "abcabc";
+    assert s1[0] == 'a' && s1[3] == 'a';
     var found1, out1 := FindFirstRepeatedChar(s1);
-    assert 0 < 3 < |s1| && s1[0] == s1[3] && s1[0] == 'a';
     assert found1 && out1 == 'a';
 
     // Middle character is repeated
     var s2 := "axbcx";
+    assert s2[1] == 'x' && s2[4] == 'x';
     var found2, out2 := FindFirstRepeatedChar(s2);
-    assert 1 < 4 < |s2| && s2[1] == s2[4] && s2[1] == 'x';
     assert found2 && out2 == 'x';
 
     // No repeated characters

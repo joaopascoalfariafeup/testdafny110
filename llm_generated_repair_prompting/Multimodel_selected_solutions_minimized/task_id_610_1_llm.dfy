@@ -2,7 +2,8 @@
 method RemoveElementAt(s: array<int>, k: nat) returns (v: array<int>)
     requires k < s.Length
     ensures v.Length == s.Length - 1
-    ensures v[..] == s[..k] + s[k+1..]
+    ensures forall i :: 0 <= i < k ==> v[i] == s[i]
+    ensures forall i :: k <= i < v.Length ==> v[i] == s[i + 1]
 {
     v := new int[s.Length - 1];
     for i := 0 to k
@@ -12,7 +13,7 @@ method RemoveElementAt(s: array<int>, k: nat) returns (v: array<int>)
     }
     for i := k to s.Length - 1
         invariant v[..k] == s[..k]
-        invariant v[k..i] == s[k+1..i+1]
+        invariant forall j :: k <= j < i ==> v[j] == s[j + 1]
     {
         v[i] := s[i + 1];
     }

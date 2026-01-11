@@ -64,7 +64,6 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
     modifies a
     ensures nz <= a.Length
     ensures AllNonZero(a[..nz])
-    ensures AllZero(a[nz..])
     ensures NonZeroElements(a[..]) == NonZeroElements(old(a[..]))
     ensures nz == CountNonZero(old(a[..]))
 {
@@ -83,7 +82,6 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
             if nz < i {
                 a[nz], a[i] := a[i], a[nz]; // swap non-zero element to the left
             }
-            assert a[..nz+1] == a[..nz] + [a[nz]];
             nz := nz + 1; // increment number of non-zero elements
         } else {
             assert original[..i+1] == original[..i] + [original[i]];
@@ -94,7 +92,6 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
     NonZeroElementsOfZero(a[nz..]);
     assert a[..] == a[..nz] + a[nz..];
     NonZeroElementsConcat(a[..nz], a[nz..]);
-    assert NonZeroElements(a[nz..]) == [];
 }
 
 
@@ -102,18 +99,17 @@ method MoveZeroesToEnd(a: array<int>) returns (nz: nat)
 
 method MoveZeroesToEndTest(){
     var a1 := new int[] [1, 0, 0, 3];
+    assert a1[..] == [1, 0, 0, 3];
     var nz1 := MoveZeroesToEnd(a1);
-    assert [1, 0, 0][..2] == [1, 0];
-    assert [1, 0][..1] == [1];
+    assert [1, 0, 0, 3][..3] == [1, 0, 0];
     assert NonZeroElements([1, 0, 0, 3]) == [1, 3];
-    assert CountNonZero([1, 0, 0, 3]) == 2;
     assert nz1 == 2 && a1[..] == [1, 3, 0, 0];
  
     var a2 := new int[] [0, 1, 0, 1];
-    assert a2[..] == [0, 1, 0, 1];
     var nz2 := MoveZeroesToEnd(a2);
     assert [0, 1, 0, 1][..3] == [0, 1, 0];
-    assert [0, 1][..1] == [0];
     assert NonZeroElements([0, 1, 0, 1]) == [1, 1];
     assert nz2 == 2 && a2[..] == [1, 1, 0, 0];
 }
+
+

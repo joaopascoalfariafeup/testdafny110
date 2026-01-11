@@ -17,9 +17,10 @@ method LinearSearch<T(==)>(a: array<T>, x: T) returns (index: int)
 
 method TestLinearSearch() {
   var a := new int[] [3, 2, 1, 3];
+  assert a[0] == 3 && a[1] == 2 && a[2] == 1 && a[3] == 3;
 
   var i := LinearSearch(a, 2);
-  assert a[1] == 2;
+  assert a[0] != 2;
   assert i == 1;
 
   var j := LinearSearch(a, 0);

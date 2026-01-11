@@ -24,6 +24,10 @@ ghost function {:fuel 20} RecamanVal(n: nat): nat
     RecamanSeq(n)[n]
 }
 
+lemma RecamanSeqLength(n: nat)
+    ensures |RecamanSeq(n)| == n + 1
+{
+}
 
 
 method Contains(x: int, a: array<nat>, len: nat) returns (res: bool)
@@ -69,14 +73,10 @@ method Recaman(n: nat) returns (res: nat)
             a[i] := a[i-1] + i;
         }
     }
+    RecamanSeqLength(n);
     return a[n];
 }
 
-lemma InSeqWitness(x: int, s: seq<nat>, k: nat)
-    requires 0 <= k < |s|
-    requires s[k] == x
-{
-}
 
 method {:fuel RecamanSeq, 20} {:fuel RecamanVal, 20} {:fuel InSeq, 20} TestRecaman() {
     var r0 := Recaman(0); assert r0 == 0;
@@ -87,11 +87,11 @@ method {:fuel RecamanSeq, 20} {:fuel RecamanVal, 20} {:fuel InSeq, 20} TestRecam
     var r5 := Recaman(5); assert r5 == 7;
     
     ghost var seq5 := RecamanSeq(5);
-    InSeqWitness(1, seq5, 1);
+    assert seq5[1] == 1;
     var r6 := Recaman(6); assert r6 == 13;
     
     ghost var seq6 := RecamanSeq(6);
-    InSeqWitness(6, seq6, 3);
+    assert seq6[3] == 6;
     var r7 := Recaman(7); assert r7 == 20;
     
     var r8 := Recaman(8); assert r8 == 12; // decreases

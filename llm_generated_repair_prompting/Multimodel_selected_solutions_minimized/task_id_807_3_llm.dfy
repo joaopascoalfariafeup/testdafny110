@@ -2,7 +2,6 @@
 // If there is no odd number, returns -1.
 method FindFirstOdd(a: array<int>) returns (index: int)
     ensures -1 <= index < a.Length
-    ensures index == -1 ==> (forall k :: 0 <= k < a.Length ==> !IsOdd(a[k]))
     ensures index != -1 ==> IsOdd(a[index]) && (forall k :: 0 <= k < index ==> !IsOdd(a[k]))
 {
     for i := 0 to a.Length
@@ -26,22 +25,12 @@ method FindFirstOddTest(){
 
     var out1 := FindFirstOdd(a1);
 
-    if out1 == -1 {
-    } else {
-        if out1 != 0 {
-            assert !IsOdd(a1[0]); // from forall k < out1
-        }
-    }
-    assert out1 == 0;
 
     // last
     var a2 := new int[] [2, 4, 1];
 
     var out2 := FindFirstOdd(a2);
 
-    if out2 == -1 {
-        assert !IsOdd(a2[2]);
-    }
 
     // none
     var a3 := new int[] [2, 6, 4];

@@ -22,6 +22,7 @@ lemma SetProductCommutative(s: set<int>, x: int)
     if x == y {
     } else {
         var s1 := s - {y};
+        assert x in s1;
         var s2 := s - {x};
         SetProductCommutative(s2, y);
         assert s1 - {x} == s2 - {y};

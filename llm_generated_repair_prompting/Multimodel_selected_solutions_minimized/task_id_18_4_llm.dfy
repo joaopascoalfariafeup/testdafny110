@@ -20,11 +20,7 @@ method RemoveChars(s1: string, s2: string) returns (v: string)
       v := v + [s1[i]];
     }
 
-    calc {
-      FilterChars(s1[..i+1], s2);
-      == { assert s1[..i+1] == s1[..i] + [s1[i]]; }
-      FilterChars(s1[..i] + [s1[i]], s2);
-    }
+    assert s1[..i+1] == s1[..i] + [s1[i]];
   }
   assert s1[..|s1|] == s1;
 }
@@ -33,25 +29,14 @@ lemma Eval_FilterChars_1()
   ensures FilterChars("a.b,c;", ".,;") == "abc"
 {
   assert "a.b,c;" == "a.b,c" + [';'];
+  assert "a.b,c" == "a.b," + ['c'];
   assert "a.b,"  == "a.b" + [','];
+  assert "a.b"   == "a." + ['b'];
 
 
-  calc {
-    FilterChars("a.b,c", ".,;");
-    == { assert "a.b,c" == "a.b," + ['c']; }
-  }
 
 
-  calc {
-    FilterChars("a.b", ".,;");
-    == { assert "a.b" == "a." + ['b']; }
-  }
 
-  calc {
-    FilterChars("a.", ".,;");
-    == { }
-    FilterChars("a", ".,;");
-  }
 
 
 }
@@ -59,21 +44,13 @@ lemma Eval_FilterChars_1()
 lemma Eval_FilterChars_2()
   ensures FilterChars("exomile", "toxic") == "emle"
 {
+  assert "exomile" == "exomil" + ['e'];
+  assert "exomil"  == "exomi" + ['l'];
+  assert "exomi"   == "exom" + ['i'];
+  assert "exom"    == "exo" + ['m'];
+  assert "exo"     == "ex" + ['o'];
 
 
-  calc {
-    FilterChars("exomile", "toxic");
-    == { assert "exomile" == "exomil" + ['e']; }
-    FilterChars("exomil" + ['e'], "toxic");
-    == { assert "exomil" == "exomi" + ['l']; }
-    FilterChars("exomi" + ['l'], "toxic") + ['e'];
-    == { assert "exomi" == "exom" + ['i']; }
-    (FilterChars("exom" + ['i'], "toxic") + ['l']) + ['e'];
-    == { assert "exom" == "exo" + ['m']; }
-    (FilterChars("exo" + ['m'], "toxic") + ['l']) + ['e'];
-    == { assert "exo" == "ex" + ['o']; }
-    ((FilterChars("ex" + ['o'], "toxic") + ['m']) + ['l']) + ['e'];
-  }
 }
 
 // Test cases checked statically

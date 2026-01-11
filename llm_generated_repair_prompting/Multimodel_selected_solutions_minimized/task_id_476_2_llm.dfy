@@ -1,6 +1,8 @@
 // Returns the sum of the minimum and maximum elements of a non-empty array
 ghost function {:fuel 5} Min(s: seq<int>): int
   requires |s| > 0
+  ensures Min(s) in s
+  ensures forall k :: 0 <= k < |s| ==> s[k] >= Min(s)
 {
   if |s| == 1 then s[0]
   else if s[|s|-1] < Min(s[..|s|-1]) then s[|s|-1]
@@ -9,6 +11,8 @@ ghost function {:fuel 5} Min(s: seq<int>): int
 
 ghost function {:fuel 5} Max(s: seq<int>): int
   requires |s| > 0
+  ensures Max(s) in s
+  ensures forall k :: 0 <= k < |s| ==> s[k] <= Max(s)
 {
   if |s| == 1 then s[0]
   else if s[|s|-1] > Max(s[..|s|-1]) then s[|s|-1]
@@ -33,7 +37,6 @@ method SumMinMax(a: array<int>) returns (sum: int)
       maxVal := a[i];
     }
   }
-  assert a[..a.Length] == a[..];
   sum := minVal + maxVal;
 }
 

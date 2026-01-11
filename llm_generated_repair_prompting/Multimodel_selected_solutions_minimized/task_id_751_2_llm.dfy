@@ -36,7 +36,7 @@ method IsMinHeapTest(){
   // Not partially sorted
   var a3:= new int[] [2, 10, 4, 5, 3, 15];
   var res3 := IsMinHeap(a3);
-  assert a3[Parent(3)] > a3[3];
+  assert Parent(3) == 1;
   assert !res3;
 
 

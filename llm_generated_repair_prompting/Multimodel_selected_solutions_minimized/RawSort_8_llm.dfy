@@ -53,7 +53,9 @@ ghost function MapNewToOld(pair: (int, int), i: int, j: int, oldSeq: seq<T>, new
    var p := pair.0;
    var q := pair.1;
    if p == i && q > j then (j, q)
+   else if p == i && i < q < j then (i, q)
    else if q == j && p < i then (p, i)
+   else if q == j && i < p < j then (p, j)
    else if p == j then (i, q)
    else if q == i then (p, j)
    else pair
@@ -91,8 +93,7 @@ method RawSort(a: array<T>)
 {
    if i, j :| 0 <= i < j < a.Length && a[i] > a[j]  {
       ghost var oldSeq := a[..];
-      ghost var oldInvSet := SeqInversionSet(oldSeq);
-      assert InversionSet(a) == oldInvSet;
+      assert InversionSet(a) == SeqInversionSet(a[..]);
       a[i], a[j] := a[j], a[i]; // swap
       SwapDecreasesInversions(a, i, j, oldSeq);
       RawSort(a); // proceed recursivelly
@@ -108,3 +109,5 @@ method testRawsort() {
    RawSort(a);
    assert a[..] == [1, 3, 5];
 }
+
+

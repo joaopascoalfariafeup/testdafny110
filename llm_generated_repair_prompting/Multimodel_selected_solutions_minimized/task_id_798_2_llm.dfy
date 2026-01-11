@@ -29,9 +29,9 @@ method ArraySumTest(){
 
   var a2 := new int[] [15, 12, 13, 10];
   var s20 := CalcArraySum(a2, 1);
+  assert a2[..1] == [15];
   assert s20 == 15;
   var s21 := CalcArraySum(a2, 2);
-  assert a2[..2] == [15, 12];
   assert s21 == 27;
   var s2 := CalcArraySum(a2);
   assert a2[..4] == [15, 12, 13, 10];

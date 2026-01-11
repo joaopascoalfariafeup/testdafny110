@@ -22,14 +22,7 @@ function {:fuel 10} MaxSeq(s: seq<nat>): nat
 
 
 
-lemma CountExtend(s: seq<nat>, v: nat, x: nat)
-{
-}
 
-lemma SeqExt<T>(s1: seq<T>, s2: seq<T>)
-  requires |s1| == |s2|
-{
-}
 
 method MakeBuckets(a: array<nat>) returns(b: array<nat>)
   requires a.Length > 0
@@ -38,6 +31,8 @@ method MakeBuckets(a: array<nat>) returns(b: array<nat>)
 {
    var max := a[0];
 
+   assert a[..1] == [a[0]];
+   assert MaxSeq(a[..1]) == a[0];
 
    for i := 1 to a.Length
      invariant max == MaxSeq(a[..i])
@@ -46,10 +41,8 @@ method MakeBuckets(a: array<nat>) returns(b: array<nat>)
          max := a[i];
       }
 
-      assert a[..i+1] == a[..i] + [a[i]];
       assert MaxSeq(a[..i+1]) == MaxSeq(a[..i] + [a[i]]);
-      assert MaxSeq(a[..i] + [a[i]]) == (if a[i] <= MaxSeq(a[..i]) then MaxSeq(a[..i]) else a[i]) by {
-      }
+      assert MaxSeq(a[..i] + [a[i]]) == (if a[i] <= MaxSeq(a[..i]) then MaxSeq(a[..i]) else a[i]);
    }
 
 
@@ -61,6 +54,7 @@ method MakeBuckets(a: array<nat>) returns(b: array<nat>)
 
 
    for i := 0 to a.Length
+     invariant 0 <= i <= a.Length
      invariant b.Length == 1 + max
      invariant forall j :: 0 <= j < a.Length ==> a[j] <= max
      invariant forall k :: 0 <= k < b.Length ==> b[k] == Count(a[..i], k)
@@ -71,12 +65,9 @@ method MakeBuckets(a: array<nat>) returns(b: array<nat>)
       assert forall k :: 0 <= k < b.Length ==> b[k] == Count(a[..i+1], k)
       by {
         forall k | 0 <= k < b.Length
+          ensures b[k] == Count(a[..i+1], k)
         {
           assert a[..i+1] == a[..i] + [a[i]];
-          assert Count(a[..i+1], k) == Count(a[..i] + [a[i]], k);
-          assert Count(a[..i] + [a[i]], k) == Count(a[..i], k) + (if a[i] == k then 1 else 0) by {
-            CountExtend(a[..i], k, a[i]);
-          }
 
         }
       }
@@ -90,6 +81,7 @@ method MakeBuckets(a: array<nat>) returns(b: array<nat>)
 // A simple test case (checked statically)
 method TestMakeBuckets() {
     var a1 := new nat[] [1, 2, 2, 3];
+    assert a1[..] == [1, 2, 2, 3];
     var b1 := MakeBuckets(a1);
 
 
@@ -97,11 +89,8 @@ method TestMakeBuckets() {
     assert b1[..] == [0, 1, 2, 1];
 
     var a2 := new nat[] [0];
-    assert a2[..] == [0];
-    assert MaxSeq(a2[..]) == 0;
     var b2 := MakeBuckets(a2);
 
 
-    SeqExt(b2[..], [1]);
     assert b2[..] == [1];
 }

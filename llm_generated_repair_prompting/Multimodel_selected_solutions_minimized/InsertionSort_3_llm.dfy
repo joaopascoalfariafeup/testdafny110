@@ -29,16 +29,16 @@ lemma SortedMultisetUniqueHelper(s1: seq<T>, s2: seq<T>)
     requires multiset(s1) == multiset(s2)
     ensures s1 == s2
 {
-    var m2 := s2[0];
+    var m1 := s1[0];
     
+    assert m1 in multiset(s2);
     
-    assert m2 in multiset(s1);
     
     
     if |s1| > 1 {
         assert s1 == [s1[0]] + s1[1..];
         assert s2 == [s2[0]] + s2[1..];
-        assert multiset(s2[1..]) == multiset(s2) - multiset{s2[0]};
+        assert multiset(s1[1..]) == multiset(s1) - multiset{s1[0]};
         SortedMultisetUniqueHelper(s1[1..], s2[1..]);
     }
 }

@@ -27,7 +27,7 @@ method IsInteger(s: string) returns (result: bool)
 
 method IsIntegerTest(){
   var s1 := "python";
-  assert !IsDigit(s1[0]);
+  assert s1[0] == 'p';
   var res1 := IsInteger(s1);
   assert !res1;
 
