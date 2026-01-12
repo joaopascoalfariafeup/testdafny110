@@ -11,7 +11,7 @@ dafny_executable = r"TODO"
 verbose = 1
 
 # verifier timeout in seconds
-verifier_timeout = 15  # Reduced from 30 to 15 for faster failure detection
+verifier_timeout = 10  # Reduced from 30 to 10 for faster failure detection
 
 # handle negative tests (tests expected to fail verification, marked with //@invalid)
 handle_negative_tests = True
