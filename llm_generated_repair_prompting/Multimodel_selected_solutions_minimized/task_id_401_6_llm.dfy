@@ -26,14 +26,10 @@ method DeepElementWiseAddition(a: seq<seq<int>>, b: seq<seq<int>>) returns (resu
 // Auxiliary method to compute the element wise addition of two sequences of equal size.
 method ElementWiseAddition(a: seq<int>, b: seq<int>) returns (result: seq<int>)
   requires |a| == |b|
-  ensures |result| == |a|
-  ensures forall i :: 0 <= i < |result| ==> result[i] == a[i] + b[i]
   ensures result == ElementWiseAdditionSpec(a, b)
 {
   result := [];
   for i := 0 to |a|
-    invariant |result| == i
-    invariant forall j :: 0 <= j < i ==> result[j] == a[j] + b[j]
     invariant result == ElementWiseAdditionSpec(a[..i], b[..i])
   {
       assert a[..i+1] == a[..i] + [a[i]];
