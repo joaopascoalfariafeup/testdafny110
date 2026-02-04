@@ -1,5 +1,5 @@
 """
-Dafny Simplifier v8 - Automatic simplification of Dafny programs.
+Dafny Simplifier v10 - Automatic simplification of Dafny programs.
 
 This tool simplifies Dafny programs by iteratively removing lines that are not
 present in an original (stripped) version, while ensuring the program still
@@ -19,50 +19,45 @@ Algorithm Overview:
 Key Features:
     - Incremental verification using --filter-symbol for faster checks
     - Smart dependency tracking to avoid unnecessary re-verification
-    - Batch removal attempts to reduce verification calls
+    - Batch removal attempts to reduce verification calls (optional, depending on candidate correlation)
     - Caching of verification results to avoid duplicate checks
     - Support for negative tests (marked with //@invalid)
     - Handles multi-line blocks (if, while, forall, calc, etc.)
-
-Performance Optimizations (v8):
-    - Reuses temporary file for verification (reduces file I/O overhead)
-    - Early termination with subprocess.run timeout (prevents hanging)
-    - Optimized regex patterns for brace counting (single pass)
-    - Space-optimized LCS matching (O(n) instead of O(m*n) space)
-    - Comprehensive profiling to identify bottlenecks
+    - Configurable parallel processing of multiple files
+    - Topological processing of declarations from clients to suppliers to minimize retries
+    - Possibility to exhaust all removal attempts within a declaration before moving on
 
 Usage:
     # Single file simplification:
     simplify_file("original.dfy", "modified.dfy", "output.dfy")
 
-    # Batch processing of a folder:
-    simplify_folder("stripped_folder", "modified_folder", "output_folder")
+    # Batch processing of a folder (parallel):
+    simplify_folder("stripped_folder", "modified_folder", "output_folder", max_workers=2)
 
 Author: João Pascoal Faria (jpf@fe.up.pt)
 License: MIT License
 
 Copyright (c) 2026 João Pascoal Faria
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 """
 
+# ==============================================================================
+# Imports
+# ==============================================================================
+
 from __future__ import annotations
+import atexit
+import os
+import re
+import subprocess
+import tempfile
+import time
+from collections import defaultdict, deque
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
+from hashlib import sha1
+from typing import Optional
+import threading
 
 
 # ==============================================================================
@@ -70,7 +65,7 @@ from __future__ import annotations
 # ==============================================================================
 
 # Path to the Dafny executable (full path, or just "dafny.exe" if in PATH)
-dafny_executable = r"dafny.exe"
+dafny_executable = r"TODO"
 
 # Verbosity level:
 #   0 = silent (no output)
@@ -78,12 +73,12 @@ dafny_executable = r"dafny.exe"
 #   2 = verbose (detailed debugging information)
 verbose = 1
 
-# Enable profiling to track time spent in different operations
+# Enable profiling to track time spent in different operations and several statistics 
 enable_profiling = False
 
 # Verification timeout settings (in seconds)
-verifier_timeout = 10       # Initial timeout per verification call
-max_verifier_timeout = 60   # Maximum timeout (used for retries and full declarations)
+verifier_timeout = 5      # Initial timeout per verification call
+max_verifier_timeout = 30   # Maximum timeout (used for retries and full declarations)
 
 # Handle negative tests: programs with //@invalid markers that should fail verification
 handle_negative_tests = True
@@ -94,45 +89,93 @@ use_filter_symbol = True
 # Group consecutive statements for batch removal before trying individual removal
 optimize_sequence = True
 
-# Batch removal settings: try removing multiple candidates at once
-max_batch_size = 4    # Maximum number of candidates to batch together
+# Batch removal settings: try removing multiple adjacent candidates at once.
+# Theoretical analysis: for batch size k and individual removal probability p,
+# expected verification attempts = 1 + k*(1-p^k). For batching to beat k individual
+# attempts, we need p > (1/k)^(1/k), which has minimum ~0.69 at k=e. 
+# Below that, batching would hurt if candidates were independent. However, adjacent
+# candidates (e.g., related assertions, variable+usage) often have correlated
+# removability, making their joint probability closer to p than p^k. We exploit
+# this by restricting batches to adjacent/overlapping candidates within the same
+# declaration body, and limiting to the first round (when correlation is highest).
+max_batch_size = 1   # Maximum number of candidates to batch together (1 = no batching)
 max_batch_lines = 10  # Maximum total lines in a batch
 max_batch_attempts = 1  # Number of batch attempts before falling back to individual
 
+# Number of cores for Dafny verifier (None for default, or integer)
+num_cores = 2
 
-# ==============================================================================
-# Imports
-# ==============================================================================
+# Parallel processing settings
+max_workers = 1 # Number of parallel file workers (set to 1 for sequential)
 
-import atexit
-import os
-import re
-import subprocess
-import tempfile
-import time
-from collections import defaultdict, deque
-from dataclasses import dataclass
-from hashlib import sha1
-from typing import Optional
+# Process declarations in topological order (leaves first) to avoid wasted
+# verification attempts on code that will be removed when its dependencies are removed.
+# When True, declarations with no dependents are fully simplified first,
+# then their callers, etc. This can significantly reduce verification calls.
+use_topological_order = True
 
+# Process sections in declarations by reverse order: header, spec, body.
+reverse_decl_sections = True
+
+# When true, tries to exhaust all removal attempts within a declaration
+# before moving to the next declaration.
+exhaust_declaration_removals = True
 
 # ==============================================================================
 # Logging
 # ==============================================================================
 
-# Create a timestamped log file for this session
+# Create a timestamped log file for this session (in current folder)
 _log_timestamp = time.strftime("%Y%m%d-%H%M%S")
 log_file_path = f"simplifier_log_{_log_timestamp}.txt"
-log_file = open(log_file_path, "w", encoding="utf-8")
 
-# Ensure log file is properly closed on exit
-atexit.register(lambda: log_file.close())
+# Thread-safe logging for main process (important with parallel workers)
+_log_lock = threading.Lock()
+_log_file = None
+
+
+def _get_log_file():
+    """Get or create the log file handle (lazy initialization)."""
+    global _log_file
+    if _log_file is None:
+        _log_file = open(log_file_path, "w", encoding="utf-8")
+        atexit.register(lambda: _log_file.close() if _log_file else None)
+    return _log_file
+
+
+def log(message: str, level: int = 1) -> None:
+    """
+    Print message to screen (if verbose >= level) and always write to log file.
+
+    Args:
+        message: The message to output.
+        level: Minimum verbosity level required to print to screen.
+    """
+    if verbose >= level:
+        print(message)
+    with _log_lock:
+        log_file = _get_log_file()
+        log_file.write(message + "\n")
+        log_file.flush()  # Ensure immediate write for parallel processes
+
+
+def log_worker(message: str, level: int = 1, worker_id: str = None) -> None:
+    """
+    Log message from a worker process.
+
+    Args:
+        message: The message to output.
+        level: Minimum verbosity level required to print to screen.
+        worker_id: Optional worker identifier for prefixing messages.
+    """
+    if worker_id:
+        message = f"[{worker_id}] {message}"
+    log(message, level)
 
 
 # ==============================================================================
 # Profiling
 # ==============================================================================
-
 
 @dataclass
 class ProfileStats:
@@ -140,182 +183,101 @@ class ProfileStats:
     total_verifications: int = 0
     successful_verifications: int = 0
     failed_verifications: int = 0
-    cached_verifications: int = 0
+    syntax_error_verifications: int = 0
+    negative_test_failures: int = 0
     timeout_verifications: int = 0
+    other_failures : int = 0
+    cached_verifications: int = 0
 
     total_verification_time: float = 0.0
     min_verification_time: float = float('inf')
     max_verification_time: float = 0.0
 
-    # Breakdown by location
-    body_verifications: int = 0
-    spec_verifications: int = 0
-    header_verifications: int = 0
-
-    body_verification_time: float = 0.0
-    spec_verification_time: float = 0.0
-    header_verification_time: float = 0.0
-
     # Other times
     preprocessing_time: float = 0.0
 
-    def add_verification(self, duration: float, success: int, cached: bool, location: str = None):
+    def add_verification(self, duration: float, success: int, cached: bool):
         """Record a verification attempt."""
         if not cached:
             self.total_verifications += 1
             self.total_verification_time += duration
             self.min_verification_time = min(self.min_verification_time, duration)
             self.max_verification_time = max(self.max_verification_time, duration)
-
             if success == 1:
                 self.successful_verifications += 1
-            elif success == 0:
+            else:
                 self.failed_verifications += 1
-
-            # Track by location
-            if location == "B":
-                self.body_verifications += 1
-                self.body_verification_time += duration
-            elif location == "S":
-                self.spec_verifications += 1
-                self.spec_verification_time += duration
-            elif location == "H":
-                self.header_verifications += 1
-                self.header_verification_time += duration
+                if success == -1:
+                    self.syntax_error_verifications += 1
+                elif success == -2:
+                    self.timeout_verifications += 1
+                elif success == -3:
+                    self.negative_test_failures += 1
+                else:
+                    self.other_failures += 1
         else:
             self.cached_verifications += 1
 
-    def add_timeout(self):
-        """Record a timeout."""
-        self.timeout_verifications += 1
+
+    def merge(self, other: 'ProfileStats'):
+        """Merge stats from another ProfileStats instance."""
+        self.total_verifications += other.total_verifications
+        self.successful_verifications += other.successful_verifications
+        self.failed_verifications += other.failed_verifications
+        self.syntax_error_verifications += other.syntax_error_verifications
+        self.negative_test_failures += other.negative_test_failures
+        self.cached_verifications += other.cached_verifications
+        self.timeout_verifications += other.timeout_verifications
+        self.other_failures += other.other_failures
+        self.total_verification_time += other.total_verification_time
+        if other.min_verification_time < self.min_verification_time:
+            self.min_verification_time = other.min_verification_time
+        if other.max_verification_time > self.max_verification_time:
+            self.max_verification_time = other.max_verification_time
+        self.preprocessing_time += other.preprocessing_time
 
     def print_summary(self):
         """Print profiling summary."""
-        print(f"\n{'='*60}")
-        print(f"PROFILING SUMMARY")
-        print(f"{'='*60}")
+        log(f"\n{'='*60}")
+        log(f"PROFILING SUMMARY")
+        log(f"{'='*60}")
 
-        print(f"\nVerification Calls:")
-        print(f"  Total verifications: {self.total_verifications}")
-        print(f"  Successful: {self.successful_verifications}")
-        print(f"  Failed: {self.failed_verifications}")
-        print(f"  Cached (skipped): {self.cached_verifications}")
-        print(f"  Timeouts: {self.timeout_verifications}")
+        log(f"\nVerification Calls:")
+        log(f"  Total verifications: {self.total_verifications}")
+        log(f"  Successful: {self.successful_verifications}")
+        log(f"  Failed: {self.failed_verifications}")
+        log(f"  Syntax Errors: {self.syntax_error_verifications}")
+        log(f"  Negative Test Failures: {self.negative_test_failures}")
+        log(f"  Timeouts: {self.timeout_verifications}")
+        log(f"  Other failures: {self.other_failures}")
 
-        if self.total_verifications > 0:
-            avg_time = self.total_verification_time / self.total_verifications
-            print(f"\nVerification Time:")
-            print(f"  Total: {self.total_verification_time:.1f}s ({self.total_verification_time/60:.1f}m)")
-            print(f"  Average: {avg_time:.2f}s")
-            print(f"  Min: {self.min_verification_time:.2f}s")
-            print(f"  Max: {self.max_verification_time:.2f}s")
-
-            print(f"\nVerification Breakdown by Location:")
-            if self.body_verifications > 0:
-                avg_body = self.body_verification_time / self.body_verifications
-                print(f"  Body: {self.body_verifications} calls, {self.body_verification_time:.1f}s total, {avg_body:.2f}s avg")
-            if self.spec_verifications > 0:
-                avg_spec = self.spec_verification_time / self.spec_verifications
-                print(f"  Spec: {self.spec_verifications} calls, {self.spec_verification_time:.1f}s total, {avg_spec:.2f}s avg")
-            if self.header_verifications > 0:
-                avg_header = self.header_verification_time / self.header_verifications
-                print(f"  Header: {self.header_verifications} calls, {self.header_verification_time:.1f}s total, {avg_header:.2f}s avg")
-
-        if self.preprocessing_time > 0:
-            print(f"\nOther Times:")
-            print(f"  Preprocessing: {self.preprocessing_time:.2f}s")
-
-        print(f"{'='*60}\n")
-
-        # Also write to log file
-        log_file.write(f"\n{'='*60}\n")
-        log_file.write(f"PROFILING SUMMARY\n")
-        log_file.write(f"{'='*60}\n")
-        log_file.write(f"\nVerification Calls:\n")
-        log_file.write(f"  Total verifications: {self.total_verifications}\n")
-        log_file.write(f"  Successful: {self.successful_verifications}\n")
-        log_file.write(f"  Failed: {self.failed_verifications}\n")
-        log_file.write(f"  Cached (skipped): {self.cached_verifications}\n")
-        log_file.write(f"  Timeouts: {self.timeout_verifications}\n")
+        log(f"  Cached (skipped): {self.cached_verifications}")
 
         if self.total_verifications > 0:
             avg_time = self.total_verification_time / self.total_verifications
-            log_file.write(f"\nVerification Time:\n")
-            log_file.write(f"  Total: {self.total_verification_time:.1f}s ({self.total_verification_time/60:.1f}m)\n")
-            log_file.write(f"  Average: {avg_time:.2f}s\n")
-            log_file.write(f"  Min: {self.min_verification_time:.2f}s\n")
-            log_file.write(f"  Max: {self.max_verification_time:.2f}s\n")
-
-            log_file.write(f"\nVerification Breakdown by Location:\n")
-            if self.body_verifications > 0:
-                avg_body = self.body_verification_time / self.body_verifications
-                log_file.write(f"  Body: {self.body_verifications} calls, {self.body_verification_time:.1f}s total, {avg_body:.2f}s avg\n")
-            if self.spec_verifications > 0:
-                avg_spec = self.spec_verification_time / self.spec_verifications
-                log_file.write(f"  Spec: {self.spec_verifications} calls, {self.spec_verification_time:.1f}s total, {avg_spec:.2f}s avg\n")
-            if self.header_verifications > 0:
-                avg_header = self.header_verification_time / self.header_verifications
-                log_file.write(f"  Header: {self.header_verifications} calls, {self.header_verification_time:.1f}s total, {avg_header:.2f}s avg\n")
+            log(f"\nVerification Time:")
+            log(f"  Total: {self.total_verification_time:.1f}s ({self.total_verification_time/60:.1f}m)")
+            log(f"  Average: {avg_time:.2f}s")
+            log(f"  Min: {self.min_verification_time:.2f}s")
+            log(f"  Max: {self.max_verification_time:.2f}s")
 
         if self.preprocessing_time > 0:
-            log_file.write(f"\nOther Times:\n")
-            log_file.write(f"  Preprocessing: {self.preprocessing_time:.2f}s\n")
+            log(f"\nOther Times:")
+            log(f"  Preprocessing: {self.preprocessing_time:.2f}s")
 
-        log_file.write(f"{'='*60}\n\n")
-
-# Global profiling stats
-profile_stats = ProfileStats()
+        log(f"{'='*60}\n")
 
 
 # ==============================================================================
 # Dafny Verification
 # ==============================================================================
 
-# Persistent temporary file for Dafny verification (reused to reduce I/O overhead)
-_temp_dafny_file = None
-_temp_dafny_path = None
-
-
-def _get_temp_dafny_file() -> str:
-    """
-    Get or create a persistent temporary file for Dafny verification.
-
-    The file is reused across all verifications to reduce file system overhead.
-    It is automatically cleaned up when the program exits.
-
-    Returns:
-        Path to the temporary .dfy file.
-    """
-    global _temp_dafny_file, _temp_dafny_path
-
-    if _temp_dafny_file is None:
-        # Create a named temporary file that persists
-        _temp_dafny_file = tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix='.dfy',
-            delete=False,
-            encoding='utf-8'
-        )
-        _temp_dafny_path = _temp_dafny_file.name
-        _temp_dafny_file.close()  # Close but don't delete
-
-        # Register cleanup function to delete on exit
-        atexit.register(_cleanup_temp_file)
-
-    return _temp_dafny_path
-
-def _cleanup_temp_file():
-    """Clean up the temporary Dafny file on program exit."""
-    global _temp_dafny_file, _temp_dafny_path
-
-    if _temp_dafny_path and os.path.exists(_temp_dafny_path):
-        try:
-            os.unlink(_temp_dafny_path)
-        except Exception:
-            pass  # Ignore cleanup errors
-
-def verify_dafny_file(contents: str, lines: list[str], handle_negative_tests: bool = handle_negative_tests,
-                      filter_symbol: str = None, filter_lines: tuple[int, int] = None, timeout: int = verifier_timeout) -> tuple[int, float]:
+def verify_dafny_file(contents: str, 
+                      lines: list[str], 
+                      handle_negative_tests: bool = handle_negative_tests,
+                      filter_symbol: str = None, 
+                      timeout: int = verifier_timeout,
+                      profile_stats: ProfileStats = None) -> tuple[int, float, float]:
     """
     Verifies a Dafny file using the Dafny verifier.
 
@@ -324,95 +286,106 @@ def verify_dafny_file(contents: str, lines: list[str], handle_negative_tests: bo
         lines: The lines of the Dafny file
         handle_negative_tests: Whether to run negative tests
         filter_symbol: Optional method/function name to filter verification (uses --filter-symbol)
-        filter_lines: Optional pair of first and last line numbers to filter verification
         timeout: Verification timeout in seconds
+        profile_stats: Optional ProfileStats instance to record metrics
 
     Returns:
         Tuple of (success_code, duration) where:
-        - success_code: 1 if verification succeeds, 0 if verification fails, -1 if syntax errors
-        - duration: time spent in verification (seconds)
+        - success_code: 1 if verification succeeds, 0 if verification fails, -1 if syntax errors,
+                        -2 if timeout, -3 if negative test failure
+        - duration: time spent in verification (seconds), including checking negative tests if applicable
+        - initial_duration: time spent in initial verification (seconds), excluding negative tests
     """
     verify_start = time.time()
 
-    # Get persistent temporary file path
-    temp_dafny_path = _get_temp_dafny_file()
-
-    # Write to temporary file (overwrite previous content)
-    with open(temp_dafny_path, 'w', encoding='utf-8') as file:
-        file.write(contents)
-
-    # Build command
-    cmd = [
-        dafny_executable,
-        "verify",
-        temp_dafny_path,
-        f"--verification-time-limit:{timeout}",
-        "--allow-warnings:true",
-        "--cores", "2"
-    ]
-    if filter_symbol:
-        cmd.append(f"--filter-symbol={filter_symbol}.")
-    if filter_lines is not None:
-        cmd.append(f"--filter-position={filter_lines[0]}-{filter_lines[1]}")
-
-    # Run the verifier with timeout enforcement
-    # Add buffer to timeout to allow Dafny to cleanup gracefully
-    process_timeout = timeout + 5
-
+    # Create a per-call temporary file (process-safe)
+    temp_fd, temp_dafny_path = tempfile.mkstemp(suffix='.dfy', text=True)
     try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=process_timeout,
-            check=False
-        )
-        stdout = result.stdout
-    except subprocess.TimeoutExpired:
-        # Process exceeded timeout - treat as verification failure
-        duration = time.time() - verify_start
-        if enable_profiling:
-            profile_stats.add_timeout()
-        if verbose >= 2:
-            print(f"  Verification timed out after {process_timeout}s")
-            log_file.write(f"  Verification timed out after {process_timeout}s\n")
-        return 0, duration  # verification failed due to timeout
+        # Write to temporary file
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as file:
+            file.write(contents)
 
-    # Remove errors regarding counter-examples
-    cleaned = "\n".join(
-        line for line in stdout.decode('utf-8').splitlines()
-        if not line.startswith("Prover error")
-    )
+        # Build command
+        cmd = [
+            dafny_executable,
+            "verify",
+            temp_dafny_path,
+            f"--verification-time-limit:{timeout}",
+            "--allow-warnings:true"
+        ]
 
-    # Check for errors in output
-    if "resolution/type errors" in cleaned or "parse errors" in cleaned:
-        duration = time.time() - verify_start
-        return -1, duration  # syntax errors
-    if not cleaned.endswith(' 0 errors'):
-        duration = time.time() - verify_start
-        return 0, duration  # verification failed
+        if num_cores is not None:
+            cmd.append(f"--cores:{num_cores}")
 
-    # Run negative tests (one at a time) if required
-    if handle_negative_tests:
-        for index in range(len(lines)):
-            line = lines[index]
-            if not line.strip().startswith("//@invalid"):
-                continue
-            # Erase this string in this line
-            old_line = line
-            lines[index] = line.replace("//@invalid", "")
-            new_content = "\n".join(lines)
-            # Call the verifier again on the new file (no filter for negative tests)
-            success, _ = verify_dafny_file(new_content, lines, False, filter_symbol, filter_lines, verifier_timeout)
-            # restore the old line and continue
-            lines[index] = old_line
-            # If passes, return failure
-            if success == 1:
-                duration = time.time() - verify_start
-                return 0, duration  # failure
+        # filter by position seems not to work properly, so we filter by symbol only
+        if filter_symbol:
+            cmd.append(f"--filter-symbol={filter_symbol}.")
+            # '.' added to avoid prefix matches
 
-    duration = time.time() - verify_start
-    return 1, duration  # success
+        # Run the verifier with timeout enforcement
+        # Add buffer to timeout to allow Dafny to cleanup gracefully
+        process_timeout = timeout + 5
+
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=process_timeout,
+                check=False
+            )
+            stdout = result.stdout
+        except subprocess.TimeoutExpired:
+            # Process exceeded timeout - treat as verification failure
+            initial_duration = time.time() - verify_start
+            log(f"  Verification timed out after {process_timeout}s", level=2)
+            return -2, initial_duration, initial_duration  # verification failed due to timeout
+       
+        initial_duration = time.time() - verify_start
+
+        # Remove errors regarding counter-examples, to avoid confusion with normal errors
+        cleaned = "\n".join(
+            line for line in stdout.decode('utf-8').splitlines()
+            if not line.startswith("Prover error")
+        )        
+
+        # Check for errors in output
+        if "resolution/type errors" in cleaned or "parse errors" in cleaned:
+            return -1, initial_duration, initial_duration  # syntax errors
+        if not cleaned.endswith(' 0 errors'):
+            if initial_duration >= timeout:
+                return -2, initial_duration, initial_duration  # verification failed due to timeout
+            else:
+                return 0, initial_duration, initial_duration  # verification failed
+
+        # Run negative tests (one at a time) if required
+        if handle_negative_tests:
+            for index in range(len(lines)):
+                line = lines[index]
+                if not line.strip().startswith("//@invalid"):
+                    continue
+                # Erase this string in this line
+                old_line = line
+                lines[index] = line.replace("//@invalid", "")
+                new_content = "\n".join(lines)
+                # Call the verifier again on the new file
+                success, _, _ = verify_dafny_file(new_content, lines, False, filter_symbol, verifier_timeout, profile_stats)
+                # restore the old line and continue
+                lines[index] = old_line
+                # If passes, return failure
+                if success == 1:
+                    total_duration = time.time() - verify_start
+                    return -3, initial_duration, total_duration  # failure in negative tests
+
+        total_duration = time.time() - verify_start
+        return 1, initial_duration, total_duration  # success
+
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(temp_dafny_path)
+        except Exception:
+            pass  # Ignore cleanup errors
 
 
 # ==============================================================================
@@ -431,12 +404,8 @@ class DeclarationInfo:
         header_start: Line number where the declaration starts (0-indexed).
         body_start: Line number where the body begins (after requires/ensures).
         end_line: Line number where the declaration ends.
-        timestamp_spec: Timestamp of last change to specification (requires/ensures).
-        timestamp_body: Timestamp of last change to the body.
-        timestamp_spec_neighbors: Timestamp indicating when neighbors changed,
-            requiring re-verification of this declaration's spec.
-        timestamp_body_neighbors: Timestamp indicating when neighbors changed,
-            requiring re-verification of this declaration's body.
+        timestamp_spec: Timestamp of last change that created opportunities for specification minimization (requires/ensures).
+        timestamp_body: Timestamp of last change that created opportunities for body minimization.
         ref_count: Number of references to this declaration from other declarations.
     """
     name: str
@@ -446,21 +415,20 @@ class DeclarationInfo:
     end_line: int
     timestamp_spec: int = 0
     timestamp_body: int = 0
-    timestamp_spec_neighbors: int = 0
-    timestamp_body_neighbors: int = 0
     ref_count: int = 0
+    scc_id: int = -1  # strongly connected component id for topological ordering
 
 
 @dataclass
-class LineInfo:
+class RemovalCandidate:
     """
-    Information about a removable candidate (line or block).
+    A candidate for removal during simplification (single line or block).
 
     Attributes:
         id: Unique identifier for this candidate.
-        line_num: Starting line number (0-indexed).
-        block_end: Ending line number (same as line_num for single lines).
-        enclosing_decl: The declaration containing this line, if any.
+        start_line: Starting line number (0-indexed).
+        end_line: Ending line number (same as start_line for single lines).
+        enclosing_decl: The declaration containing this candidate, if any.
         enclosing_location: Location within declaration:
             "H" = header, "S" = specification, "B" = body, None = global.
         replace_with: Replacement text when removing (e.g., "}" for "} else"),
@@ -471,8 +439,8 @@ class LineInfo:
         num_batch_attempts: Number of times included in batch removal attempts.
     """
     id: int
-    line_num: int
-    block_end: int
+    start_line: int
+    end_line: int
     enclosing_decl: Optional[DeclarationInfo]
     enclosing_location: Optional[str]
     replace_with: Optional[str]
@@ -480,6 +448,7 @@ class LineInfo:
     num_attempts: int = 0
     max_attempts: int = -1
     num_batch_attempts: int = 0
+    outgoing_refs: int = 0  # number of references from this candidate to other declarations
 
 
 @dataclass
@@ -493,19 +462,28 @@ class FileStructure:
 
     Attributes:
         lines: Current lines of the file.
-        line_info: List of removable candidates.
+        candidates: List of removal candidates.
         declarations: Map from declaration name to DeclarationInfo.
         contains_negative_tests: True if file has //@invalid markers.
+        decls_with_negative_tests: Set of declaration names containing //@invalid markers.
+            Used to determine when negative tests need to be re-verified.
         dependencies: Map (A, B) -> count where A calls/references B.
             Count > 0 means direct dependency, count = 0 means indirect (transitive).
+        deps_spec: Map (A, B) -> count where A's spec references B.
+            Used for fine-grained retry decisions.
+        deps_body: Map (A, B) -> count where A's body references B.
+            Used for fine-grained retry decisions.
         removable_decls: Set of declaration names that can be fully removed
             (no other declarations depend on them).
     """
     lines: list[str]
-    line_info: list[LineInfo]
+    candidates: list[RemovalCandidate]
     declarations: dict[str, DeclarationInfo]
     contains_negative_tests: bool
+    decls_with_negative_tests: set[str]
     dependencies: dict[tuple[str, str], int]
+    deps_spec: dict[tuple[str, str], int]
+    deps_body: dict[tuple[str, str], int]
     removable_decls: set[str]
 
 
@@ -589,8 +567,8 @@ def compute_lcs_matching(modified_normalized: list[str], original_normalized: li
     """
     Compute line matching using Longest Common Subsequence (LCS) algorithm.
 
-    This is a fallback for when the fast subsequence matching fails (e.g., when
-    lines were reordered). Uses O(n) space optimization instead of O(m*n).
+    This is a fallback for when the fast subsequence matching fails.
+    Uses O(n) space optimization instead of O(m*n).
 
     Args:
         modified_normalized: Normalized lines from the modified file.
@@ -603,14 +581,14 @@ def compute_lcs_matching(modified_normalized: list[str], original_normalized: li
     m, n = len(modified_normalized), len(original_normalized)
     if n == 0:
         return [-1] * m
-    
+
     # Use only 2 rows instead of m+1 rows
     prev = [0] * (n + 1)
     curr = [0] * (n + 1)
-    
+
     # Store backtracking info separately (only when needed)
     backtrack = {}  # (i, j) -> direction
-    
+
     for i in range(1, m + 1):
         for j in range(1, n + 1):
             if modified_normalized[i - 1] == original_normalized[j - 1]:
@@ -625,7 +603,7 @@ def compute_lcs_matching(modified_normalized: list[str], original_normalized: li
                     backtrack[(i, j)] = 'left'
         prev, curr = curr, prev
         curr = [0] * (n + 1)
-    
+
     # Reconstruct matching using backtrack dict
     result = [-1] * m
     i, j = m, n
@@ -639,11 +617,8 @@ def compute_lcs_matching(modified_normalized: list[str], original_normalized: li
             i -= 1
         else:
             j -= 1
-    
+
     return result
-
-
-
 
 
 # ==============================================================================
@@ -705,9 +680,7 @@ def transitive_closure_dependencies_typed(
                     q.append(nxt)
                     if nxt != start and (start, nxt) not in result:
                         result[(start, nxt)] = 0  # indirect edge
-                        if verbose >= 2:
-                            print(f"  Added indirect dependency edge: {start} -> {nxt}")
-                            log_file.write(f"  Added indirect dependency edge: {start} -> {nxt}\n")
+                        log(f"  Added indirect dependency edge: {start} -> {nxt}", level=2)
 
 
     return result
@@ -717,11 +690,18 @@ def transitive_closure_dependencies_typed(
 #  Parsing Utilities
 # ==============================================================================
 
-# Keywords that start a declaration (method, lemma, function, predicate)
-DECLARATION_STARTERS = [
-    "function", "predicate", "lemma", "method",
-    "ghost function", "ghost predicate", "ghost lemma", "ghost method"
+# Similar, restricted to methods and lemmas only
+METHOD_LIKE_STARTERS = [
+    "method", "lemma", "ghost method", "ghost lemma"
 ]
+
+# And to functions and predicates only
+FUNCTION_LIKE_STARTERS = [
+    "function", "predicate", "ghost function", "ghost predicate"
+]
+
+# Keywords that start a declaration, combining the previous two
+DECLARATION_STARTERS = METHOD_LIKE_STARTERS + FUNCTION_LIKE_STARTERS
 
 # Keywords for specification clauses
 CLAUSE_KEYWORDS = ["requires", "ensures", "modifies", "decreases", "reads",
@@ -766,14 +746,33 @@ def get_decl_kind(decl_header_line: str) -> str:
         (transparent body), or "?" for unknown.
     """
     s = decl_header_line.strip()
-    if s.startswith(("method", "lemma", "ghost method", "ghost lemma")):
+    # similar but using the above constants for starters
+
+    if s.startswith(tuple(METHOD_LIKE_STARTERS)):
         return "M"
-    if s.startswith(("function", "predicate", "ghost function", "ghost predicate")):
+    if s.startswith(tuple(FUNCTION_LIKE_STARTERS)):
         return "F"
     return "?"
 
 
-def _find_block_end(lines: list[str], start_index: int, brace_depths: list[int]) -> tuple[int, Optional[str]]:
+def _find_next_line_non_empty(lines: list[str], start_index: int) -> int:
+    """
+    Find the next non-empty line after start_index.
+
+    Args:
+        lines: All lines of the file.
+        start_index: Line to start searching from.
+
+    Returns:
+        Line index of the next non-empty line, or len(lines) if none found.
+    """
+    for i in range(start_index + 1, len(lines)):
+        if lines[i].strip():
+            return i
+    return len(lines)
+
+
+def _find_block_end(lines: list[str], start_index: int) -> tuple[int, Optional[str]]:
     """
     Find the end of a brace-delimited block starting at start_index.
 
@@ -782,7 +781,6 @@ def _find_block_end(lines: list[str], start_index: int, brace_depths: list[int])
     Args:
         lines: All lines of the file.
         start_index: Line where the block starts.
-        brace_depths: Precomputed brace depth at each line.
 
     Returns:
         Tuple of (end_line_index, replacement_text). The replacement_text is
@@ -796,9 +794,6 @@ def _find_block_end(lines: list[str], start_index: int, brace_depths: list[int])
         initial_offset = -1
     else:
         initial_offset = 0
-
-    start_depth = brace_depths[start_index - 1] if start_index > 0 else 0
-    target_depth = start_depth
 
     open_count = 0
     close_count = initial_offset
@@ -818,7 +813,8 @@ def _find_block_end(lines: list[str], start_index: int, brace_depths: list[int])
 
         if open_count == close_count and open_count > 0:
             # Check for else continuation
-            if "else" in line_to_check or (i < len(lines) - 1 and "else" in lines[i + 1]):
+            if (re.search(r'\belse\b', line_to_check) or 
+                (i < len(lines) - 1 and re.search(r'\belse\b', lines[i + 1]))):
                 continue
 
             # Determine replacement
@@ -927,7 +923,6 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
         original_normalized = [normalize_line(line) for line in original_lines]
 
     # First pass: compute brace depths and find declarations
-    brace_depths = []
     current_depth = 0
     declarations = {}
     dependencies = {}
@@ -963,7 +958,6 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
                 current_decl_body_start = i
 
         current_depth += open_count - close_count
-        brace_depths.append(current_depth)
 
         # Check for declaration end
         # A declaration ends when:
@@ -986,9 +980,8 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
                         end_line=i,
                         timestamp_body=0,
                         timestamp_spec=0,
-                        timestamp_spec_neighbors=0,
-                        timestamp_body_neighbors=0,
-                        ref_count=0
+                        ref_count=0,
+                        scc_id=-1
                     )
                     declarations[current_decl_name] = new_decl
                     current_decl_name = None
@@ -1001,10 +994,10 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
     modified_normalized = [normalize_line(line) for line in lines]
     lcs_matching = compute_subsequence_matching(modified_normalized, original_normalized)
 
-    # Second pass: build line info with all preprocessed data
-    line_infos = []
-    # queue of line_info corresponding to start of blocks to be inserted later at end of block
-    line_info_queue = deque()
+    # Second pass: build removal candidates with all preprocessed data
+    candidates = []
+    # queue of candidates corresponding to start of blocks to be inserted later at end of block
+    candidate_queue = deque()
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -1038,7 +1031,7 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
         block_end = -1
         replace_with = None
 
-        # Track if we need to add a second LineInfo for "assert...by" statements
+        # Track if we need to add a second RemovalCandidate for "assert...by" statements
         by_replace_with = None
         is_block_start = False
         code_part = stripped.split("//")[0].rstrip()
@@ -1048,20 +1041,20 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
             block_end = enclosing_decl.end_line
         # Check if this starts a block
         elif any(code_part.startswith(token) for token in BLOCK_INITIATORS):
-            block_end, replace_with = _find_block_end(lines, i, brace_depths)
+            block_end, replace_with = _find_block_end(lines, i)
             is_block_start = True
         elif code_part.startswith("assert ") and " by {" in code_part:
             # Assert with inline "by {" block - create TWO options:
-            # 1. Remove entire statement (this LineInfo)
-            # 2. Replace just the "by {...}" part with ";" (second LineInfo below)
-            block_end, _ = _find_block_end(lines, i, brace_depths)
+            # 1. Remove entire statement (this RemovalCandidate)
+            # 2. Replace just the "by {...}" part with ";" (second RemovalCandidate below)
+            block_end, _ = _find_block_end(lines, i)
             if block_end > i:
                 is_block_start = True
             # Prepare second option: replace "by {...}" with ";"
             by_replace_with = line[:line.find(" by {")] + ";"
         elif (code_part.startswith("assert ") or code_part.startswith("==")) and not code_part.endswith(";"):
             if code_part.startswith("assert ")  and i + 1 < len(lines) and lines[i + 1].strip().startswith("by "):
-                block_end, _ = _find_block_end(lines, i, brace_depths)
+                block_end, _ = _find_block_end(lines, i)
                 if block_end > i:
                     is_block_start = True
             else:
@@ -1069,6 +1062,9 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
         elif any(code_part.startswith(clause) for clause in CLAUSE_KEYWORDS):
             # Multiline clause - find the end of the clause
             block_end = _find_clause_end(lines, i)
+            # don't remove ensures after forall statements (only together with the whole forall)
+            if code_part.startswith("ensures") and i > 0 and lines[i - 1].strip().startswith("forall "):
+                is_removable = False
         elif stripped.startswith("}") and not stripped.startswith("} else"):
             # Don't remove closing braces alone
             is_removable = False
@@ -1084,94 +1080,102 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
             is_removable = False
 
         if is_removable:
-            # For "assert...by" statements, add a second LineInfo for "replace by with ;" option
+            # For "assert...by" statements, add a second RemovalCandidate for "replace by with ;" option
             if by_replace_with is not None:
-                line_infos.append(LineInfo(
+                candidates.append(RemovalCandidate(
                     id=0,
-                    line_num=i,
+                    start_line=i,
                     enclosing_decl=enclosing_decl,
                     enclosing_location=enclosing_location,
-                    block_end=block_end,
+                    end_line=block_end,
                     replace_with=by_replace_with  # Replace with "assert ...;"
                 ))
 
 
-                # Add primary LineInfo (full removal option)
-            new_line_info = LineInfo(
+                # Add primary RemovalCandidate (full removal option)
+            new_candidate = RemovalCandidate(
                 id=0, # to be determined later
-                line_num=i,
+                start_line=i,
                 enclosing_decl=enclosing_decl,
                 enclosing_location=enclosing_location,
-                block_end=block_end,
+                end_line=block_end,
                 replace_with=replace_with
             )
 
             if is_block_start and block_end > i:
-                line_info_queue.append(new_line_info)
+                candidate_queue.append(new_candidate)
             else:
-                line_infos.append(new_line_info)
+                candidates.append(new_candidate)
 
         # pop from queue blocks that end here (start from the ones added later)
-        while line_info_queue and line_info_queue[-1].block_end == i:
-            queued_info = line_info_queue.pop()
-            line_infos.append(queued_info)
-            if verbose >= 2:
-                print(f"Added queued removable block from line {queued_info.line_num+1} to line {i+1}")
+        while candidate_queue and candidate_queue[-1].end_line == i:
+            queued_candidate = candidate_queue.pop()
+            candidates.append(queued_candidate)
+            log(f"Added queued removable block from line {queued_candidate.start_line+1} to line {i+1}", level=2)
 
-    # check sequences of removable isolated lines and add at the end a new line_info
+    # check sequences of removable isolated lines and add at the end a new candidate
     # for the entire sequence (at least for first attempt)
     if optimize_sequence:
         i = 0
-        while i < len(line_infos):
-            info = line_infos[i]
-            stripped = lines[info.line_num].strip()
+        while i < len(candidates):
+            info = candidates[i]
+            stripped = lines[info.start_line].strip()
             if (info.enclosing_location != "B" or
-                info.replace_with is not None or stripped.startswith("invariant")
-                or stripped.startswith("decreases")):
+                info.replace_with is not None or
+                stripped.startswith("invariant") or
+                stripped.startswith("decreases")):
                 i += 1
                 continue
-            start = info.line_num
-            end = info.block_end
+            start = info.start_line
+            end = info.end_line
             j = i
-            while j + 1 < len(line_infos):
-                next_info = line_infos[j+1]
+            while j + 1 < len(candidates):
+                next_info = candidates[j+1]
                 if (next_info.enclosing_location == "B" and
                     next_info.replace_with is None and
-                    next_info.line_num == end + 1):
-                    end = next_info.block_end
+                    next_info.start_line == _find_next_line_non_empty(lines, end)):
+                    end = next_info.end_line
                     j += 1
                 else:
                     break
             if i == j:
                 i += 1
                 continue
-            # add new LineInfo for the entire sequence
-            new_line_info = LineInfo(
+            # add new RemovalCandidate for the entire sequence
+            new_candidate = RemovalCandidate(
                 id=0,
-                line_num=start,
+                start_line=start,
                 enclosing_decl=info.enclosing_decl,
                 enclosing_location=info.enclosing_location,
-                block_end=end,
+                end_line=end,
                 replace_with=None,
                 max_attempts=1  # only one attempt for the entire sequence
             )
             # insert after j
-            line_infos.insert(j + 1, new_line_info)
+            candidates.insert(j + 1, new_candidate)
             # advance i
             i = j + 2
 
-    # renumber line_info ids
-    for new_id, info in enumerate(line_infos):
-        info.id = new_id
-
-    # Check for negative tests
+    # Check for negative tests and find which declarations contain them
     contains_negative_tests = any("@invalid" in line for line in lines)
+    decls_with_negative_tests = set()
+    if contains_negative_tests:
+        for decl in declarations.values():
+            # Check if any line in this declaration contains @invalid
+            for i in range(decl.header_start, decl.end_line + 1):
+                if "@invalid" in lines[i]:
+                    decls_with_negative_tests.add(decl.name)
+                    break
 
     deps_spec = {}
     deps_body = {}
     decl_kind = {}
 
-    # count references between declarations
+    # Pre-compile regex patterns for each declaration name (v9 optimization)
+    decl_patterns = {name: re.compile(rf'\b{re.escape(name)}\s*\(')
+                     for name in declarations.keys()}
+
+    # count references between declarations using pre-compiled patterns
     for decl in declarations.values():
         decl_kind[decl.name] = decl.kind
 
@@ -1183,13 +1187,14 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
             if other_decl == decl.name:
                 continue
 
-            pattern = rf'\b{other_decl}\s*\('
+            # Use pre-compiled pattern (v9 optimization)
+            pattern = decl_patterns[other_decl]
 
-            c_spec = len(re.findall(pattern, spec_text))
+            c_spec = len(pattern.findall(spec_text))
             if c_spec > 0:
                 deps_spec[(decl.name, other_decl)] = deps_spec.get((decl.name, other_decl), 0) + c_spec
 
-            c_body = len(re.findall(pattern, body_text))
+            c_body = len(pattern.findall(body_text))
             if c_body > 0:
                 deps_body[(decl.name, other_decl)] = deps_body.get((decl.name, other_decl), 0) + c_body
 
@@ -1200,7 +1205,7 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
 
     # Initially all removable candidates need rechecking
     removable_decls = set()
-    for info in line_infos:
+    for info in candidates:
         enclosing_decl =  info.enclosing_decl
         if enclosing_decl is not None:
             if info.enclosing_location == "B":
@@ -1213,15 +1218,262 @@ def preprocess_file(lines: list[str], original_lines: list[str] = None) -> FileS
                 if enclosing_decl.ref_count == 0:
                     removable_decls.add(enclosing_decl.name)
 
+    # count references from candidates to other declarations
+    for info in candidates:
+        info.outgoing_refs = 0
+        candidate_text = "\n".join(lines[info.start_line:info.end_line+1])
+        decl = info.enclosing_decl
+        for other_decl in declarations.keys():
+            if other_decl == decl.name:
+                continue
+            pattern = decl_patterns[other_decl]
+            c_cand = len(pattern.findall(candidate_text))
+            info.outgoing_refs += c_cand
+
+    # Reorder candidates by topological order if enabled, as well as outgoing refs
+    if use_topological_order:
+        topo_order = compute_topological_order(declarations, dependencies)
+        log(f"Topological order of declarations: {topo_order}", level=2)
+        #print declaration names with scc_ids
+        for decl_name in topo_order:
+            decl = declarations[decl_name]
+            log(f"  Decl: {decl.name}, SCC ID: {decl.scc_id}", level=2)
+        candidates = _reorder_candidates_by_topological_order(candidates, topo_order)
+        # print the reordered candidates for debugging
+        log("Reordered candidates by topological order:", level=2)
+        for info in candidates:
+            decl_name = info.enclosing_decl.name if info.enclosing_decl else "Global"
+            log(f"  Candidate ID {info.id}: lines {info.start_line+1}-{info.end_line+1}, Decl: {decl_name}, Loc: {info.enclosing_location}", level=2)   
+
+    # renumber candidate ids
+    for new_id, info in enumerate(candidates):
+        info.id = new_id
+
     return FileStructure(
         lines=lines,
-        line_info=line_infos,
+        candidates=candidates,
         declarations=declarations,
         contains_negative_tests=contains_negative_tests,
+        decls_with_negative_tests=decls_with_negative_tests,
         dependencies=dependencies,
+        deps_spec=deps_spec,
+        deps_body=deps_body,
         removable_decls=removable_decls
     )
 
+
+def _reorder_candidates_by_topological_order(
+    candidates: list[RemovalCandidate],
+    topo_order: list[str]
+) -> list[RemovalCandidate]:
+    """
+    Reorder candidates so they follow topological order of declarations.
+
+    Since we iterate backwards through candidates, leaf declarations (which
+    should be processed first) need to be at the END of the list. The
+    topo_order has leaves first, so we reverse it for candidate placement.
+
+    Order after reordering:
+    1. Global candidates (no enclosing declaration) - at the beginning
+    2. Candidates from root declarations (many dependents)
+    3. ...
+    4. Candidates from leaf declarations (no dependents) - at the end
+
+    Within each declaration, the original order is preserved within each section.
+
+    Args:
+        candidates: Original list of candidates.
+        topo_order: Topological order of declarations (leaves first).
+
+    Returns:
+        Reordered list of candidates.
+    """
+
+    # Group candidates by declaration name
+    by_decl: dict[Optional[str], list[RemovalCandidate]] = defaultdict(list)
+    by_decl_loc: dict[Optional[str], dict[str, list[RemovalCandidate]]] = defaultdict(lambda: defaultdict(list))
+    for candidate in candidates:
+        decl_name = candidate.enclosing_decl.name if candidate.enclosing_decl else None
+        by_decl[decl_name].append(candidate)
+        if reverse_decl_sections:
+            location = candidate.enclosing_location
+            by_decl_loc[decl_name][location].append(candidate) 
+    
+    # Build reordered list
+    reordered = []
+
+    # 1. Global candidates first (will be processed last when iterating backwards)
+    if None in by_decl:
+        reordered.extend(by_decl[None])
+
+    # 2. Declarations in topological order
+    for decl_name in topo_order:
+        if decl_name in by_decl:
+            if reverse_decl_sections:
+                for loc in ["B", "S", "H", None]:
+                    if loc in by_decl_loc[decl_name]:
+                        reordered.extend(sorted(by_decl_loc[decl_name][loc], key=lambda c: c.outgoing_refs))
+            else:
+                reordered.extend(by_decl[decl_name])
+
+    # 3. Any declarations not in topo_order (shouldn't happen, but be safe)
+    seen = set(topo_order) | {None}
+    for decl_name, cands in by_decl.items():
+        if decl_name not in seen:
+            reordered.extend(cands)
+
+    return reordered
+
+
+def _find_sccs(nodes: set[str], graph: dict[str, set[str]]) -> list[list[str]]:
+    """
+    Find strongly connected components using Tarjan's algorithm.
+
+    Args:
+        nodes: Set of node names.
+        graph: Adjacency list (node -> set of neighbors).
+
+    Returns:
+        List of SCCs, each SCC is a list of node names.
+        SCCs are returned in reverse topological order (sinks first).
+    """
+    index_counter = [0]
+    stack = []
+    lowlinks = {}
+    index = {}
+    on_stack = {}
+    sccs = []
+
+    def strongconnect(node):
+        index[node] = index_counter[0]
+        lowlinks[node] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(node)
+        on_stack[node] = True
+
+        for neighbor in graph.get(node, set()):
+            if neighbor not in index:
+                strongconnect(neighbor)
+                lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])
+            elif on_stack.get(neighbor, False):
+                lowlinks[node] = min(lowlinks[node], index[neighbor])
+
+        # If node is a root of an SCC
+        if lowlinks[node] == index[node]:
+            scc = []
+            while True:
+                w = stack.pop()
+                on_stack[w] = False
+                scc.append(w)
+                if w == node:
+                    break
+            sccs.append(scc)
+
+    for node in nodes:
+        if node not in index:
+            strongconnect(node)
+
+    return sccs
+
+
+def compute_topological_order(declarations: dict[str, DeclarationInfo], dependencies: dict[tuple[str, str], int]) -> list[str]:
+    """
+    Compute topological order of declarations for processing (leaves first).
+    Also assigns SCC IDs to DeclarationInfo objects.
+
+    Uses Tarjan's algorithm to find strongly connected components (SCCs),
+    then topologically sorts SCCs so that declarations with no dependents
+    (leaf nodes) come first. This allows us to fully simplify leaf
+    declarations before moving to their callers, avoiding wasted
+    verification attempts on code that will be removed later.
+
+    Tie-breaking: When multiple declarations/SCCs have the same topological
+    level, they are sorted by descending header_start position (declarations
+    later in the file come first).
+
+    Args:
+        declarations: Map from declaration name to DeclarationInfo.
+        dependencies: Map of dependencies {(A, B): count} where A depends on B.
+
+    Returns:
+        List of declaration names in topological order (leaves first).
+    """
+    decl_names = set(declarations.keys())
+
+    if not decl_names:
+        return []
+
+    # Build reverse dependency map: for each decl, who depends on it
+    # dependencies has (A, B) -> count meaning A depends on B
+    # So B's dependents include A
+    dependents = defaultdict(set)  # B -> {A: A depends on B}
+
+    for (a, b), _ in dependencies.items():
+        if a in decl_names and b in decl_names:
+            dependents[b].add(a)
+
+    # Find SCCs using Tarjan's algorithm
+    # We use the "dependents" graph direction: edges from B to A when A depends on B
+    # This gives us SCCs in reverse topological order (leaves first)
+    sccs = _find_sccs(decl_names, dependents)
+
+    # Build SCC lookup: node -> SCC index
+    scc_of = {}
+    for scc_idx, scc in enumerate(sccs):
+        for node in scc:
+            scc_of[node] = scc_idx
+            # each node is a declaration name; so updates each declaration to its scc index
+            if node is not None and node in declarations:
+                declarations[node].scc_id = scc_idx
+
+    # Build condensation graph (DAG of SCCs) using dependents direction
+    # scc_dependents[scc_i] = {scc_j: scc_j has nodes depending on nodes in scc_i}
+    scc_dependents = defaultdict(set)
+    for node in decl_names:
+        node_scc = scc_of[node]
+        for dep in dependents.get(node, set()):
+            dep_scc = scc_of[dep]
+            if dep_scc != node_scc:
+                scc_dependents[node_scc].add(dep_scc)
+
+    # Compute in-degree for SCCs (how many other SCCs depend on this one)
+    scc_in_degree = {i: 0 for i in range(len(sccs))}
+    for scc_idx, deps in scc_dependents.items():
+        for dep_scc in deps:
+            scc_in_degree[dep_scc] += 1
+
+    # Helper to get sort key for an SCC (max header_start, descending)
+    def scc_sort_key(scc_idx):
+        return max(declarations[name].header_start for name in sccs[scc_idx])
+
+    # Kahn's algorithm on SCCs with tie-breaking by descending header_start
+    # Use a list as priority queue, sorted by descending max header_start
+    ready = [i for i in range(len(sccs)) if scc_in_degree[i] == 0]
+    ready.sort(key=scc_sort_key, reverse=True)
+
+    result = []
+    while ready:
+        # Pop SCC with highest header_start (last in file)
+        scc_idx = ready.pop()
+
+        # Sort nodes within SCC by descending header_start
+        scc_nodes = sorted(
+            sccs[scc_idx],
+            key=lambda name: declarations[name].header_start,
+            reverse=True
+        )
+        result.extend(scc_nodes)
+
+        # Update in-degrees and add newly ready SCCs
+        for dep_scc in scc_dependents.get(scc_idx, set()):
+            scc_in_degree[dep_scc] -= 1
+            if scc_in_degree[dep_scc] == 0:
+                # Insert maintaining sorted order (descending by header_start)
+                # Binary search would be faster but list is typically small
+                ready.append(dep_scc)
+                ready.sort(key=scc_sort_key, reverse=True)
+
+    return result
 
 
 # ==============================================================================
@@ -1235,13 +1487,14 @@ def update_after_removal(fs: FileStructure,
                          timestamp: int,
                          removed_segments: list[tuple[int, int, str]],
                          removed_code: str,
+                         inserted_code: str,
                          new_lines: list[str]) -> None:
     """
     Incrementally update the FileStructure after successfully removing lines.
 
     This function maintains the FileStructure in a consistent state without
     requiring a full re-parse. It updates:
-    - Line numbers in all LineInfo and DeclarationInfo objects
+    - Line numbers in all RemovalCandidate and DeclarationInfo objects
     - Dependency counts (decremented for removed calls)
     - Timestamps for affected declarations and their neighbors
     - The set of declarations eligible for full removal
@@ -1249,62 +1502,67 @@ def update_after_removal(fs: FileStructure,
     Args:
         fs: The file structure to update (modified in place).
         enclosing_decl: Declaration containing the removed code (or None if global).
-        enclosing_location: "H" (header), "S" (spec), or "B" (body).
+        enclosing_location: "H" (header), "S" (spec), "B" (body) or None (global).
         timestamp: Current logical timestamp for change tracking.
-        removed_segments: List of (start, end, replacement) tuples that were removed.
-        removed_code: The actual source code that was removed.
+        removed_segments: List of (start, end, replacement) tuples that were removed (with eventual replacements).
+        removed_code: The actual source code that was removed (for decrementing reference counts).
         new_lines: The new list of lines after removal.
     """
-    # identify (semi)'silent' removals, without impact
+    # identify (semi)silent removals, without impact
     silent_removal = False
     postcond_removal = False
-    if (len(removed_segments) == 1 
+    if (len(removed_segments) == 1
         and removed_segments[0][0] == removed_segments[0][1]):
         line = fs.lines[removed_segments[0][0]].strip()
-        if  line.startswith("decreases") or line.startswith("reads"):
+        if  line.startswith("decreases") or line.startswith("reads") or line.startswith("modifies"):
             silent_removal = True
         elif line.startswith("ensures"):
             postcond_removal = True
 
-    # update timestamp in enclosing declaration on success
+    # update timestamps in enclosing declaration on success for rechecking
     if enclosing_decl is not None and not silent_removal:
         if enclosing_location == "H":
             enclosing_decl.timestamp_body = timestamp
             enclosing_decl.timestamp_spec = timestamp
-            # also delete from removable_decls since header changed
-            fs.removable_decls.remove(enclosing_decl.name)
+            # also delete from removable_decls
+            fs.removable_decls.discard(enclosing_decl.name)
         elif enclosing_location == "S":
             enclosing_decl.timestamp_spec = timestamp
+            # After removing a postcondition, body may have removable assertions
+            # that were only needed to prove that postcondition
+            if postcond_removal:
+                enclosing_decl.timestamp_body = timestamp
         elif enclosing_location == "B":
             enclosing_decl.timestamp_body = timestamp
+            enclosing_decl.timestamp_spec = timestamp
 
-    # Update line_info list - ensure positions match between line_info and lines
-    new_line_info = []
-    for _, info in enumerate(fs.line_info):
+    # Update candidates list - ensure positions match between candidates and lines
+    new_candidates = []
+    for _, old in enumerate(fs.candidates):
         # adjust line numbers
-        new_start, new_end, new_replace_with = update_segment_after_removals(info.line_num, info.block_end, info.replace_with, removed_segments)
+        new_start, new_end, new_replace_with = update_segment_after_removals((old.start_line, old.end_line, old.replace_with), removed_segments)
         if new_start > new_end:
             continue
         # append adjusted info
-        new_info = LineInfo(
-            id=info.id,
-            line_num=new_start,
-            enclosing_location=info.enclosing_location,
-            enclosing_decl=info.enclosing_decl,
-            block_end=new_end,
+        updated = RemovalCandidate(
+            id=old.id,
+            start_line=new_start,
+            enclosing_location=old.enclosing_location,
+            enclosing_decl=old.enclosing_decl,
+            end_line=new_end,
             replace_with=new_replace_with,
-            timestamp_last_attempt=info.timestamp_last_attempt,
-            num_attempts=info.num_attempts,
-            max_attempts=info.max_attempts,
-            num_batch_attempts=info.num_batch_attempts
+            timestamp_last_attempt=old.timestamp_last_attempt,
+            num_attempts=old.num_attempts,
+            max_attempts=old.max_attempts,
+            num_batch_attempts=old.num_batch_attempts
         )
-        new_line_info.append(new_info)
+        new_candidates.append(updated)
 
-    # Update declarations dictionary
+    # Update line numbers in declarations dictionary
     for decl in fs.declarations.values():
-        new_header_start, new_body_end, ins = update_segment_after_removals(decl.header_start, decl.end_line, None, removed_segments)
-        new_body_start, new_body_end, ins = update_segment_after_removals(decl.body_start, decl.end_line, None, removed_segments)
-        if new_header_start > new_body_end:
+        new_header_start, new_body_end, _ = update_segment_after_removals((decl.header_start, decl.end_line, None), removed_segments)
+        new_body_start, new_body_end, _ = update_segment_after_removals((decl.body_start, decl.end_line, None), removed_segments)
+        if new_header_start > new_body_end: # to be removed
             decl.header_start = -1
             decl.body_start = -1
             decl.end_line = -1
@@ -1313,7 +1571,7 @@ def update_after_removal(fs: FileStructure,
             decl.body_start = new_body_start
             decl.end_line = new_body_end
 
-    # update reference counters and neighbours_timestamp in dependencies
+    # update reference counters in dependencies
     if enclosing_decl is not None:
         for other_decl in fs.declarations.keys():
             if other_decl == enclosing_decl.name or other_decl not in removed_code:
@@ -1321,53 +1579,69 @@ def update_after_removal(fs: FileStructure,
             # Check if it is actually a call with parenthesis
             pattern = rf'\b{other_decl}\s*\('
             count = len(re.findall(pattern, removed_code))
+            if inserted_code is not None and inserted_code != "":
+                count -= len(re.findall(pattern, inserted_code))
             if count == 0:
                 continue
             key = (enclosing_decl.name, other_decl)
             fs.dependencies[key] = fs.dependencies.get(key, 0) - count
-            if verbose >= 2:
-                print(f"Decrementing dependency: {key} by {count}, new count: {fs.dependencies[key]}")
-                log_file.write(f"Decrementing dependency: {key} by {count}, new count: {fs.dependencies[key]}\n")
+            log(f"Decrementing dependency: {key} by {count}, new count: {fs.dependencies[key]}", level=2)
+            # Also update fine-grained dependency dicts based on location
+            if enclosing_location == "S":
+                fs.deps_spec[key] = fs.deps_spec.get(key, 0) - count
+            elif enclosing_location == "B":
+                fs.deps_body[key] = fs.deps_body.get(key, 0) - count
             decl_info = fs.declarations.get(other_decl)
-            decl_info.ref_count = max(0, decl_info.ref_count - count   )
+            decl_info.ref_count = max(0, decl_info.ref_count - count)
             if decl_info.ref_count == 0:
                 fs.removable_decls.add(other_decl)
-                if verbose >= 1:
-                    print(f"{other_decl}: Marked for full removal due to 0 dependencies")
-                    log_file.write(f"{other_decl}: Marked for full removal due to 0 dependencies\n")
+                log(f"{other_decl}: Marked for full removal due to 0 dependencies")
 
-        # update timestamps for neighbours
-        if not silent_removal:
-            for (a, b), _cnt in fs.dependencies.items():
-                if a == enclosing_decl.name:
-                    b_info = fs.declarations.get(b)
-                    b_info.timestamp_spec_neighbors = timestamp # to recheck spec
-                if b == enclosing_decl.name and enclosing_location == "S" and not postcond_removal:
-                    a_info = fs.declarations.get(a)
-                    a_info.timestamp_spec_neighbors = timestamp
-                    a_info.timestamp_body_neighbors = timestamp
+    # update neighbours timestamps in dependencies
+    if enclosing_decl is not None and not silent_removal:
+        for (a, b), _ in fs.dependencies.items():
+            if a == enclosing_decl.name:
+                b_info = fs.declarations.get(b)
+                b_info.timestamp_spec = timestamp # to recheck spec (might need less ensures)
+            if b == enclosing_decl.name and enclosing_location == "S": #and not postcond_removal:
+                a_info = fs.declarations.get(a)
+                # If A's spec references B, retry A's spec minimization (e.g., reduce requires)
+                if (a, b) in fs.deps_spec:
+                    a_info.timestamp_spec = timestamp
+                    a_info.timestamp_body = timestamp
+                # If A's body references B, retry A's body minimization (e.g., reduce asserts)
+                if (a, b) in fs.deps_body:
+                    a_info.timestamp_body = timestamp
+                    a_info.timestamp_spec = timestamp
 
-    # remove declaration if fully removed
+    # remove declaration if fully removed (and dependencies where it appears)
     if enclosing_location == "H":
         fs.declarations.pop(enclosing_decl.name, None)
-        for (a, b), _cnt in list(fs.dependencies.items()):
+        for (a, b), _ in list(fs.dependencies.items()):
             if a == enclosing_decl.name or b == enclosing_decl.name:
                 fs.dependencies.pop((a, b), None)
+        for (a, b), _ in list(fs.deps_spec.items()):
+            if a == enclosing_decl.name or b == enclosing_decl.name:
+                fs.deps_spec.pop((a, b), None)
+        for (a, b), _ in list(fs.deps_body.items()):
+            if a == enclosing_decl.name or b == enclosing_decl.name:
+                fs.deps_body.pop((a, b), None)
 
-    # update lines and line_info in fs
+    # update lines and candidates in fs
     fs.lines = new_lines
-    fs.line_info = new_line_info
-
+    fs.candidates = new_candidates
 
 
 # ==============================================================================
 # Segment Manipulation Utilities (start_line, end_line, replacement)
+# This is needed because multiple overlapping, contiguous or unordered removal
+# segments can be applied in a batch.
 # ==============================================================================
 
 
 def add_removal_segment(segments: list[tuple[int, int, str]], new_seg: tuple[int, int, str]) -> list[tuple[int, int, str]]:
     """
-    Add a segment to an ordered list of non-overlapping removal segments.
+    Add a segment to an ordered list of non-overlapping and non-contiguous removal segments.
 
     Handles merging with adjacent or overlapping existing segments.
 
@@ -1395,7 +1669,7 @@ def add_removal_segment(segments: list[tuple[int, int, str]], new_seg: tuple[int
     start = min(i, segments[pos][0])
     end = max(j, segments[pos][1])
     if segments[pos][0] < i or (segments[pos][0] == i and segments[pos][1] > j):
-        ins = segments[pos][2]
+        ins = segments[pos][2] # prevails replacement for larger segment
     pos_end = pos+1
     while pos_end < len(segments) and segments[pos_end][0] <= end-1:
         end = max(end, segments[pos_end][1])
@@ -1404,52 +1678,54 @@ def add_removal_segment(segments: list[tuple[int, int, str]], new_seg: tuple[int
     segments[pos:pos_end] = [(start, end, ins)]
     return segments
 
-def update_segment_after_removals(i: int, j: int, old_ins: str, segments: list[tuple[int, int, str]]) -> tuple[int, int, str]:
+
+def update_segment_after_removals(seg: tuple[int, int, str], segments: list[tuple[int, int, str]]) -> tuple[int, int, str]:
     """
     Compute new line numbers for a segment after applying removals.
 
     Args:
-        i: Original start line of the segment.
-        j: Original end line of the segment.
-        old_ins: Original replacement text for this segment.
+        seg: Original segment as a tuple (start line, end line, replacement text).
         segments: List of removed segments (start, end, replacement).
 
     Returns:
-        Tuple of (new_start, new_end, replacement). If new_start > new_end,
-        the segment was fully removed.
+        Tuple of (new_start, new_end, replacement).
+        If new_start > new_end, the segment was fully removed.
     """
+    old_i, old_j, old_repl = seg
     shift_i = 0
     shift_j = 0
     for (a, b, ins) in segments:
-        if j < a:
+        if old_j < a:
             break
-        elif i > b:
+        elif old_i > b:
             shift_i += (b - a + 1)
             shift_j += (b - a + 1)
             if ins is not None:
                 shift_i -= 1
                 shift_j -= 1
-        elif i >= a and j <= b: # fully removed
-            if a == i and ins is not None:
-                return i-shift_i, j-shift_j, ins # replaced with ins
+        elif old_i >= a and old_j <= b: # fully removed or replaced
+            if a == old_i and b == old_j and ins is not None and old_repl is None:
+                return old_i-shift_i, old_i-shift_i+1, old_repl 
             else:
-                return i-shift_i, i-shift_i-1, None  # fully removed
-        elif i >= a:
-            i = b + 1 # move i past removed segment
+                return old_i-shift_i, old_i-shift_i-1, None  # fully removed/replaced
+        elif old_i >= a:
+            old_i = b + 1 # move i past removed segment
             shift_i += (b - a + 1)
             shift_j += (b - a + 1)
             if ins is not None:
                 shift_i -= 1
                 shift_j -= 1
-        elif j <= b:
-            j = a - 1 # move j before removed segment
+        elif old_j <= b:
+            old_j = a - 1 # move j before removed segment
+            if ins is not None:
+                old_j += 1
             break
         else: # removed in the middle, only j will be shifted
             shift_j += (b - a + 1)
             if ins is not None:
                 shift_j -= 1
 
-    return i-shift_i, j-shift_j, old_ins
+    return old_i-shift_i, old_j-shift_j, old_repl
 
 
 def normalize_removal_segments(initial_list: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
@@ -1473,7 +1749,7 @@ def normalize_removal_segments(initial_list: list[tuple[int, int, str]]) -> list
 # ==============================================================================
 
 
-def worth_try_removal(fs: FileStructure, info: LineInfo, timestamp: int, batch: bool, round_num: int = 1) -> bool:
+def worth_try_removal(fs: FileStructure, info: RemovalCandidate, timestamp: int, batch: bool, round_num: int = 1) -> bool:
     """
     Determine if a removal candidate is worth attempting.
 
@@ -1493,37 +1769,31 @@ def worth_try_removal(fs: FileStructure, info: LineInfo, timestamp: int, batch: 
     Returns:
         True if the removal should be attempted, False to skip.
     """
-    _ = round_num  # Reserved for future use
-    enclosing_decl = info.enclosing_decl
-    enclosing_location = info.enclosing_location
     last = info.timestamp_last_attempt
 
     if info.max_attempts != -1 and info.num_attempts >= info.max_attempts:
         recheck = False
     elif batch and info.num_batch_attempts >= max_batch_attempts:
         recheck = False
-    elif enclosing_decl is None:
+    elif info.enclosing_decl is None:
         recheck = last < timestamp
     elif info.enclosing_location  == "H":
-        recheck = (enclosing_decl.ref_count <= 0) and (last < timestamp)
-    elif enclosing_location == "B":
-        ts = max(enclosing_decl.timestamp_body, enclosing_decl.timestamp_spec)
-        ts = max(ts, enclosing_decl.timestamp_body_neighbors)
-        recheck = last < ts
-    elif enclosing_location == "S":
-        ts = max(enclosing_decl.timestamp_body, enclosing_decl.timestamp_spec)
-        ts = max(ts, enclosing_decl.timestamp_spec_neighbors)
-        recheck = last < ts
+        recheck = (info.enclosing_decl.ref_count <= 0) and (last < timestamp)
+    elif info.enclosing_location == "B":
+        recheck = last < info.enclosing_decl.timestamp_body
+    elif info.enclosing_location == "S":
+        recheck = last < info.enclosing_decl.timestamp_spec
+    else:
+        recheck = last < timestamp  # fallback
 
-    if verbose >= 2 and not recheck:
-        start_index = info.line_num
-        end_index = info.block_end if info.block_end >= start_index else start_index
+
+    if not recheck and verbose >=2:
+        start_index = info.start_line
+        end_index = info.end_line if info.end_line >= start_index else start_index
         remove_segment = "\n".join(fs.lines[start_index:end_index+1])
-        print(f"{enclosing_decl}: skipped: {remove_segment}")
-        log_file.write(f"{enclosing_decl}: skipped: {remove_segment}\n")
+        log(f"{info.enclosing_decl.name}: skipped: {remove_segment}", level=2)
 
     return recheck
-
 
 
 def apply_removal_segments(lines: list[str], segments: list[tuple[int, int, str]]) -> tuple[list[str], str]:
@@ -1541,21 +1811,25 @@ def apply_removal_segments(lines: list[str], segments: list[tuple[int, int, str]
     new_lines = []
     removed_parts = []
     current = 0
-    
+    inserted_parts = []
+
     for (i, j, ins) in segments:
         new_lines.extend(lines[current:i])
         if ins is not None:
             new_lines.append(ins)
+            inserted_parts.append(ins)
         removed_parts.append("\n".join(lines[i:j+1]))
         current = j + 1
-    
+
     new_lines.extend(lines[current:])
     removed_code = "\n".join(removed_parts) + "\n" if removed_parts else ""
-    return new_lines, removed_code
+    inserted_code = "\n".join(inserted_parts) + "\n" if inserted_parts else ""
+    return new_lines, removed_code, inserted_code
 
 
 def check_removal(fs: FileStructure, info_idxs: list[int], verification_cache: dict,
-                  timestamp: int, round_num: int) -> tuple[int, list[tuple[int, int, str]], str, list[str]]:
+                  timestamp: int, 
+                  profile_stats: ProfileStats = None) -> tuple[int, list[tuple[int, int, str]], str, str, list[str]]:
     """
     Attempt to remove one or more candidates and verify the result.
 
@@ -1567,60 +1841,63 @@ def check_removal(fs: FileStructure, info_idxs: list[int], verification_cache: d
 
     Args:
         fs: Current file structure.
-        info_idxs: Indices into fs.line_info of candidates to remove together.
+        info_idxs: Indices into fs.candidates of candidates to remove together.
         verification_cache: Cache mapping content hash to verification result.
         timestamp: Current logical timestamp.
         round_num: Current simplification round (affects timeout).
+        profile_stats: Optional ProfileStats instance for metrics.
 
     Returns:
-        Tuple of (removed_count, segments, removed_code, new_lines) where:
+        Tuple of (removed_count, segments, removed_code, inserted_code, new_lines) where:
         - removed_count: Number of lines removed (0 if verification failed)
         - segments: List of (start, end, replacement) that were removed
         - removed_code: The actual code that was removed
+        - inserted_code: The actual code that was inserted to replace removed code
         - new_lines: The new file lines after removal
     """
     # determine list of removal segments (i, j)
-    removal_segments = [(fs.line_info[idx].line_num, fs.line_info[idx].block_end, fs.line_info[idx].replace_with) for idx in info_idxs]
+    removal_segments = [(fs.candidates[idx].start_line, fs.candidates[idx].end_line, fs.candidates[idx].replace_with) for idx in info_idxs]
 
     # normalize removal segments
     removal_segments = normalize_removal_segments(removal_segments)
 
     # determine new lines and removed code
-    new_lines, removal_code = apply_removal_segments(fs.lines, removal_segments)
+    new_lines, removal_code, inserted_code = apply_removal_segments(fs.lines, removal_segments)
 
     # get enclosing declaration from first info (should be the same for all)
-    enclosing_decl = fs.line_info[info_idxs[0]].enclosing_decl
-    enclosing_location = fs.line_info[info_idxs[0]].enclosing_location
+    enclosing_decl = fs.candidates[info_idxs[0]].enclosing_decl
+    enclosing_location = fs.candidates[info_idxs[0]].enclosing_location
 
     # count lines removed, comparing new_lines with fs.lines
     removal_count = len(fs.lines) - len(new_lines)
 
     # marke new attempt and check if need verification
+    # keep track of maximum number of attempts for these candidates
+    num_attempts = 0
     need_verify = False
     for info_idx in info_idxs:
-        info = fs.line_info[info_idx]
+        info = fs.candidates[info_idx]
         info.num_attempts += 1
-        if not (info.line_num == info.block_end and fs.lines[info.line_num].strip().startswith("//")):
+        num_attempts = max(num_attempts, info.num_attempts)
+        if not (info.start_line == info.end_line and fs.lines[info.start_line].strip().startswith("//")):
             need_verify = True
 
     # in case of a batch, do not update timestamp of last attempt (to enable individual retries)
     if len(info_idxs) == 1:
-        info = fs.line_info[info_idxs[0]]
+        info = fs.candidates[info_idxs[0]]
         info.timestamp_last_attempt = timestamp
     else: # mark as batch attempt counter
         for info_idx in info_idxs:
-            info = fs.line_info[info_idx]
+            info = fs.candidates[info_idx]
             info.num_batch_attempts += 1
 
     # Check if the simplified file passes verification
     # (Skip verification for comment-only removals)
     if need_verify:
         contents="\n".join(new_lines)
-        filter_lines = None
         filter_symbol = None
         if use_filter_symbol and enclosing_decl is not None:
             if enclosing_decl.kind == "M" and enclosing_location == "B":
-                #filter_lines = (enclosing_decl.header_start + 1, enclosing_decl.end_line + 1)
                 filter_symbol = enclosing_decl.name
         # Check cache
         key = sha1(contents.encode("utf-8")).hexdigest()
@@ -1630,42 +1907,43 @@ def check_removal(fs: FileStructure, info_idxs: list[int], verification_cache: d
             duration = 0.0
 
             # Record profiling stats for cached verification
-            if enable_profiling:
-                profile_stats.add_verification(duration, success, cached=True, location=enclosing_location)
+            if profile_stats:
+                profile_stats.add_verification(duration, success, cached=True)
         else:
             cached = False
-            # Don't need to handle negative tests if changes are within the body of a method
-            # that is not a text test (with 'test' or 'Test' in its name)
-            if (not fs.contains_negative_tests or
-                (enclosing_location == "B" and enclosing_decl.kind == "M" and
-                    "test" not in enclosing_decl.name.lower())
-                or enclosing_location == "H"):
-                handle_neg_tests = False
-            else:
-                handle_neg_tests = True
+            # Negative tests only need re-verification when a spec change affects
+            # a declaration that a test method with negative tests depends on.
+            # This avoids redundant negative test checks for body changes or
+            # changes to declarations that no negative test depends on.
+            handle_neg_tests = False
+            if fs.contains_negative_tests and enclosing_location == "S" and enclosing_decl is not None:
+                # Check if any test with negative tests depends on this declaration
+                for test_name in fs.decls_with_negative_tests:
+                    if test_name == enclosing_decl.name or (test_name, enclosing_decl.name) in fs.dependencies:
+                        handle_neg_tests = True
+                        break
 
             # if marked for removal, can retry with longer timeout
-            timeout = verifier_timeout + round_num - 1
-            if enclosing_decl is not None and enclosing_location == "H":
-                timeout = timeout *2
+            timeout = verifier_timeout + num_attempts - 1
+            if enclosing_location == "H" and enclosing_decl is not None:
+                timeout = timeout * 2
             timeout = min(timeout, max_verifier_timeout)
 
             # Verify the simplified file (returns success code and duration)
-            success, duration = verify_dafny_file(contents,
+            success, duration, _ = verify_dafny_file(contents,
                                         new_lines,
                                         handle_negative_tests=handle_neg_tests,
                                         filter_symbol=filter_symbol,
-                                        filter_lines=filter_lines,
-                                        timeout=timeout)
+                                        timeout=timeout,
+                                        profile_stats=profile_stats)
 
-            # Record profiling stats
-            if enable_profiling:
-                profile_stats.add_verification(duration, success, cached=False, location=enclosing_location)
+            # Record profiling stats for actual verification
+            if profile_stats:
+                profile_stats.add_verification(duration, success, cached=False)
 
             # Log timing for slow verifications
-            if verbose >= 2 or (verbose >= 1 and duration > 5.0):
-                print(f"  Verification took {duration:.1f}s")
-                log_file.write(f"  Verification took {duration:.1f}s\n")
+            if duration > timeout:
+                log(f"  Verification took {duration:.1f}s", level=2)
 
             # Put results in a cache from file contents to result
             if verification_cache is not None:
@@ -1678,21 +1956,17 @@ def check_removal(fs: FileStructure, info_idxs: list[int], verification_cache: d
     # skip removal candidate if didn't pass verification
     name = enclosing_decl.name if enclosing_decl is not None else "Global"
     if success != 1:
-        if verbose >= 1:
-            if cached:
-                print(f"{name}({enclosing_location}): kept (using cache): {removal_code}")
-                log_file.write(f"{name}({enclosing_location}): kept (using cache): {removal_code}\n")
-            else:
-                print(f"{name}({enclosing_location}): kept: {removal_code} ")
-                log_file.write(f"{name}({enclosing_location}): kept: {removal_code} \n")
-        return 0, removal_segments, removal_code, new_lines
-
+        cache_msg = " (using cache)" if cached else ""
+        ins_msg = f" to be replaced with: {inserted_code}" if inserted_code != "" else ""
+        log(f"{name}({enclosing_location})({num_attempts}): kept{cache_msg}: {removal_code}{ins_msg}", level=1)
+        removal_count = 0
     else:
-        if verbose >= 1:
-            print(f"{name}({enclosing_location}): removed: {removal_code} ")
-            log_file.write(f"{name}({enclosing_location}): removed: {removal_code}\n")
+        if inserted_code != "":
+            log(f"{name}({enclosing_location})({num_attempts}): replaced: {removal_code}  with: {inserted_code}")
+        else:
+            log(f"{name}({enclosing_location})({num_attempts}): removed: {removal_code}")
 
-        return removal_count, removal_segments, removal_code, new_lines
+    return removal_count, removal_segments, removal_code, inserted_code, new_lines
 
 
 def find_removable_declaration_info(fs: FileStructure, timestamp: int) -> int:
@@ -1707,14 +1981,14 @@ def find_removable_declaration_info(fs: FileStructure, timestamp: int) -> int:
         timestamp: Current logical timestamp.
 
     Returns:
-        Index into fs.line_info of the declaration's header, or -1 if none found.
+        Index into fs.candidates of the declaration's header, or -1 if none found.
     """
     if fs.removable_decls is not None:
         for decl_name in fs.removable_decls:
             decl_info = fs.declarations[decl_name]
-            for idx, line_info in enumerate(fs.line_info):
-                if line_info.enclosing_decl == decl_info and line_info.enclosing_location == "H":
-                    if line_info.timestamp_last_attempt < timestamp:
+            for idx, candidate in enumerate(fs.candidates):
+                if candidate.enclosing_decl == decl_info and candidate.enclosing_location == "H":
+                    if candidate.timestamp_last_attempt < timestamp:
                         return idx
                     else:
                         break
@@ -1727,7 +2001,8 @@ def find_removable_declaration_info(fs: FileStructure, timestamp: int) -> int:
 
 
 def simplify_file(original_file: str, modified_file: str, simplified_file: str,
-             start_from_simplified_file: bool = False) -> int:
+             start_from_simplified_file: bool = False,
+             worker_id: str = None) -> tuple[int, ProfileStats]:
     """
     Simplify a Dafny file by removing unnecessary lines while preserving verification.
 
@@ -1750,14 +2025,13 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
         simplified_file: Path where the simplified output will be written.
         start_from_simplified_file: If True, continue from existing simplified
             file instead of the modified file.
+        worker_id: Optional worker identifier for log messages.
 
     Returns:
-        Total number of lines removed across all rounds.
+        Tuple of (lines_removed, profile_stats).
     """
-    # Reset profiling stats for this file
-    if enable_profiling:
-        global profile_stats
-        profile_stats = ProfileStats()
+    # Create per-file profiling stats
+    file_profile_stats = ProfileStats() if enable_profiling else None
 
     # Read original file
     with open(original_file, 'r', encoding='utf-8') as file:
@@ -1778,10 +2052,9 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
         if simplified_content is not None:
             modified_content = simplified_content
         else:
-            print(f"Could not find simplified file {simplified_file} to start from.")
-            log_file.write(f"Could not find simplified file {simplified_file} to start from.\n")
-            return 0
-
+            log(f"Could not find simplified file {simplified_file} to start from.")
+            return 0, file_profile_stats
+    
     # Preprocess the file structure ONCE (this analyzes everything upfront)
     original_lines = original_content.splitlines()
     modified_lines = modified_content.splitlines()
@@ -1790,58 +2063,53 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
         preprocess_start = time.time()
     file_structure = preprocess_file(modified_lines, original_lines)
     if enable_profiling:
-        profile_stats.preprocessing_time = time.time() - preprocess_start
-        if verbose >= 1:
-            print(f"  Preprocessing took {profile_stats.preprocessing_time:.2f}s")
-            log_file.write(f"  Preprocessing took {profile_stats.preprocessing_time:.2f}s\n")
+        file_profile_stats.preprocessing_time = time.time() - preprocess_start
+        log(f"  Preprocessing took {file_profile_stats.preprocessing_time:.2f}s")
 
     # Print declarations found
+    log(f"  Preprocessed: {len(file_structure.declarations)} declarations found", level=2)
     if verbose >= 2:
-        print(f"  Preprocessed: {len(file_structure.declarations)} declarations found")
-        log_file.write(f"  Preprocessed: {len(file_structure.declarations)} declarations found\n")
         for _, decl in file_structure.declarations.items():
-            print(f"    - {decl.name}: header={decl.header_start+1}, body={decl.body_start+1}, end={decl.end_line+1}, timestamp_spec={decl.timestamp_spec}, timestamp_body={decl.timestamp_body}, ref_count={decl.ref_count}")
-            log_file.write(f"    - {decl.name}: header={decl.header_start+1}, body={decl.body_start+1}, end={decl.end_line+1}, timestamp_spec={decl.timestamp_spec}, timestamp_body={decl.timestamp_body}, ref_count={decl.ref_count}\n")
+            log(f"    - {decl.name}: header={decl.header_start+1}, body={decl.body_start+1}, end={decl.end_line+1}, timestamp_spec={decl.timestamp_spec}, timestamp_body={decl.timestamp_body}, ref_count={decl.ref_count}", level=2)
 
     # Print dependencies found
     if verbose >= 2:
-        print("  Declaration dependencies:")
-        log_file.write("  Declaration dependencies:\n")
+        log("  Declaration dependencies:", level=2)
         for (dependent, dependee), count in file_structure.dependencies.items():
-            print(f"    - {dependent} depends on {dependee}: {count} times")
-            log_file.write(f"    - {dependent} depends on {dependee}: {count} times\n")
+            log(f"    - {dependent} depends on {dependee}: {count} times", level=2)
 
-    # Print line_infos found
+    # Print candidates found
     if verbose >= 2:
-        print(f"  Preprocessed: {len(file_structure.line_info)} removable line infos found")
-        log_file.write(f"  Preprocessed: {len(file_structure.line_info)} removable line infos found\n")
-        for info in file_structure.line_info:
-            start = info.line_num + 1
-            end = info.block_end + 1
+        log(f"  Preprocessed: {len(file_structure.candidates)} removal candidates found", level=2)
+        for info in file_structure.candidates:
+            start = info.start_line + 1
+            end = info.end_line + 1
             loc = info.enclosing_location
             decl_name = info.enclosing_decl.name if info.enclosing_decl is not None else "Global"
-            print(f"    - id {info.id} lines {start}-{end}, location={loc}, decl={decl_name}")
-            log_file.write(f"    - id {info.id} lines {start}-{end}, location={loc}, decl={decl_name}\n")
+            log(f"    - id {info.id} lines {start}-{end}, location={loc}, decl={decl_name}", level=2)
 
-    # Inicialize counters, cache, timestamp
+    # Initialize counters, cache, timestamp
     total_removed_count = 0
     round_num = 1
     verification_cache = {}  # map from sha1 of file contents to verification result
     timestamp = 1
 
     # Main simplification loop - multiple rounds until no more removals
+    # Note: when use_topological_order is True, candidates are pre-sorted during
+    # preprocessing so that iterating backwards processes leaf declarations first.
     while True:
-        if verbose >= 1:
-            print(f"\n========== Round {round_num} ==========")
-            log_file.write(f"\n========== Round {round_num} ==========\n")
+        log(f"\n========== Round {round_num} ==========")
 
         # Count of removals this round
         round_removed_count = 0
 
-        # Iterate through lines using preprocessed info, backwards
+        # Iterate through candidates backwards (leaf declarations are at the end when
+        # topological ordering is enabled, so they get processed first)
         resume_at_info_id_after_removal = None
-        k = len(file_structure.line_info)
-        while k > 0 and k <= len(file_structure.line_info):
+        last_modified_scc = None
+        inner_round = 0
+        k = len(file_structure.candidates)
+        while k > 0 and k <= len(file_structure.candidates):
             # determine next k, giving priority to declarations to remove
             k -= 1
 
@@ -1850,42 +2118,56 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
             if rmv_k >= 0:
                 # remember position after removal to resume
                 if resume_at_info_id_after_removal is None:
-                    resume_at_info_id_after_removal =  file_structure.line_info[k].id
+                    resume_at_info_id_after_removal =  file_structure.candidates[k].id
                 # jump to declaration removal
                 k = rmv_k
             # possible resume after previous removal
             elif resume_at_info_id_after_removal is not None:
-                for idx, line_info in enumerate(file_structure.line_info):
-                    if line_info.id >= resume_at_info_id_after_removal:
+                for idx, candidate in enumerate(file_structure.candidates):
+                    if candidate.id >= resume_at_info_id_after_removal:
                         k = idx
-                        if verbose >= 2:
-                            print(f"Resuming at line info with id {line_info.id} after previous removal")
-                            log_file.write(f"Resuming at line info with id {line_info.id} after previous removal\n")
+                        log(f"Resuming at candidate with id {candidate.id} after previous removal", level=2)
                         break
                 resume_at_info_id_after_removal = None
+            # Possibly continuation in the previous declaration (instead of moving to the next) if eligible candidates
+            elif exhaust_declaration_removals and last_modified_scc is not None:
+                info = file_structure.candidates[k]
+                if info.enclosing_decl is None or info.enclosing_decl.scc_id != last_modified_scc:
+                    log(f"Trying to continue in declaration {last_modified_scc}", level=2)
+                    # go to the last candidate in the last modified declaration
+                    while k+1 < len(file_structure.candidates):
+                        next_info = file_structure.candidates[k+1]
+                        if next_info.enclosing_decl is None or next_info.enclosing_decl.scc_id != last_modified_scc:
+                            break
+                        k += 1
+                    log(f"Continuing at candidate id {file_structure.candidates[k].id} in declaration {file_structure.candidates[k].enclosing_decl.name if file_structure.candidates[k].enclosing_decl is not None else None}", level=2)
+                    inner_round += 1
+                    last_modified_scc = None
 
-            # get line info
-            info = file_structure.line_info[k]
-            id = info.id
+            # get candidate
+            info = file_structure.candidates[k]
+            candidate_id = info.id
             recheck = worth_try_removal(file_structure, info, timestamp, False, round_num)
             if not recheck:
                 continue
             enclosing_decl = info.enclosing_decl
             enclosing_location = info.enclosing_location
-            line_num = info.line_num
             batch_list = [k]
 
             # possibly try several at once
-            start = info.line_num
-            stop = info.block_end
+            start = info.start_line
+            stop = info.end_line
             if max_batch_size > 1 and info.enclosing_location == "B" and info.num_batch_attempts < max_batch_attempts and stop - start + 1 < max_batch_lines:
                 idx = k-1
                 while idx >= 0 and len(batch_list) < max_batch_size:
-                    info2 = file_structure.line_info[idx]
+                    info2 = file_structure.candidates[idx]
                     if info2.enclosing_location != info.enclosing_location or info2.enclosing_decl != info.enclosing_decl:
                         break
-                    start = min(info2.line_num, start)
-                    stop = max(info2.block_end, stop)
+                    # ignore if not adjacent
+                    #if info2.end_line + 1 < start or info2.start_line > stop + 1:
+                    #    break
+                    start = min(info2.start_line, start)
+                    stop = max(info2.end_line, stop)
                     if stop - start + 1 > max_batch_lines:
                         break
                     recheck = worth_try_removal(file_structure, info2, timestamp, True, round_num)
@@ -1896,37 +2178,38 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
 
 
             # Check if removal can be done (successful verification)
-            removed_count, removed_segments, removed_code, new_lines = check_removal(file_structure, batch_list, verification_cache, timestamp, round_num)
+            removed_count, removed_segments, removed_code, inserted_code, new_lines = check_removal(
+                file_structure, batch_list, verification_cache, timestamp, file_profile_stats)
             if removed_count == 0:
                 if len(batch_list) > 1:
                     k += 1 # retry individually
                 continue  # could not remove
 
+            # Last declaration name modified
+            if enclosing_location != "H":
+                last_modified_scc = info.enclosing_decl.scc_id if info.enclosing_decl is not None else None
+
             # Increment timestamp
             timestamp += 1
 
             # Update file structure
-            update_after_removal(file_structure, enclosing_decl, enclosing_location, timestamp, removed_segments, removed_code, new_lines)
+            update_after_removal(file_structure, enclosing_decl, enclosing_location, timestamp, removed_segments, removed_code, inserted_code, new_lines)
 
             # Update counters
             round_removed_count += removed_count
 
-            # May cause removal of previous line_infos (shifting others), so adjust k accordingly
-            if k > len(file_structure.line_info):
-                k = len(file_structure.line_info)
-            while k > 0 and file_structure.line_info[k-1].id >= id:
+            # May cause removal of previous candidates (shifting others), so adjust k accordingly
+            if k > len(file_structure.candidates):
+                k = len(file_structure.candidates)
+            while k > 0 and file_structure.candidates[k-1].id >= candidate_id:
                 k -= 1
 
         # End of round - check if we made progress
         if round_removed_count == 0:
-            if verbose >= 1:
-                print(f"Round {round_num}: No more simplifications possible.")
-                log_file.write(f"Round {round_num}: No more simplifications possible.\n")
+            log(f"Round {round_num}: No more simplifications possible.")
             break
         else:
-            if verbose >= 1:
-                print(f"Round {round_num}: Removed {round_removed_count} lines.")
-                log_file.write(f"Round {round_num}: Removed {round_removed_count} lines.\n")
+            log(f"Round {round_num}: Removed {round_removed_count} lines.")
             total_removed_count += round_removed_count
             round_num += 1
             continue
@@ -1939,30 +2222,59 @@ def simplify_file(original_file: str, modified_file: str, simplified_file: str,
         else:
             with open(simplified_file, 'w', encoding='utf-8') as file:
                 file.write("\n".join(file_structure.lines))
-        return 0
+        return 0, file_profile_stats
 
     # Save the final simplified content
     with open(simplified_file, 'w', encoding='utf-8') as file:
         file.write("\n".join(file_structure.lines))
 
-    if verbose >= 1:
-        print(f"\n========== COMPLETE ==========")
-        print(f"Total rounds: {round_num}")
-        print(f"Total lines removed: {total_removed_count}")
-        log_file.write(f"\n========== COMPLETE ==========\n")
-        log_file.write(f"Total rounds: {round_num}\n")
-        log_file.write(f"Total lines removed: {total_removed_count}\n")
+    log(f"\n========== COMPLETE ==========")
+    log(f"Total rounds: {round_num}")
+    log(f"Total lines removed: {total_removed_count}")
 
-    # Print profiling summary
-    if enable_profiling and verbose >= 1:
-        profile_stats.print_summary()
+    return total_removed_count, file_profile_stats
 
-    return total_removed_count
+
+def _simplify_file_worker(args: tuple) -> tuple[str, int, float, ProfileStats]:
+    """
+    Worker function for parallel file processing.
+
+    Args:
+        args: Tuple of (original_file, modified_file, simplified_file,
+              start_from_simplified, worker_id)
+
+    Returns:
+        Tuple of (filename, lines_removed, elapsed_time, profile_stats)
+    """
+    original_file, modified_file, simplified_file, start_from_simplified, worker_id = args
+
+    filename = os.path.basename(modified_file)
+    log(f"\n{'='*60}")
+    log(f"[Worker {worker_id}] Simplifying {filename}")
+    log(f"{'='*60}")
+
+    start_time = time.time()
+
+    try:
+        removed_lines, profile_stats = simplify_file(
+            original_file,
+            modified_file,
+            simplified_file,
+            start_from_simplified_file=start_from_simplified,
+            worker_id=worker_id
+        )
+        elapsed = time.time() - start_time
+        return (filename, removed_lines, elapsed, profile_stats)
+    except Exception as e:
+        elapsed = time.time() - start_time
+        log(f"[Worker {worker_id}] Error processing {filename}: {e}")
+        return (filename, -1, elapsed, None)
 
 
 def simplify_folder(folder_with_stripped_files: str, folder_with_modified_files: str,
                     folder_with_simplified_files: str,
-                    start_from_simplified_files: bool = False) -> tuple[int, int]:
+                    start_from_simplified_files: bool = False,
+                    parallel_workers: int = None) -> tuple[int, int]:
     """
     Batch simplify all Dafny files in a folder.
 
@@ -1979,22 +2291,25 @@ def simplify_folder(folder_with_stripped_files: str, folder_with_modified_files:
         folder_with_modified_files: Folder containing *_llm.dfy files to simplify.
         folder_with_simplified_files: Folder where *_simplified.dfy outputs go.
         start_from_simplified_files: If True, continue from existing simplified files.
+        parallel_workers: Number of parallel workers (default: use max_workers config).
+            Set to 1 for sequential processing.
 
     Returns:
         Tuple of (files_simplified, total_lines_removed).
     """
-    total_simplified_files = 0
-    total_removed_lines = 0
-    total_time_seconds = 0
 
+    if parallel_workers is None:
+        parallel_workers = max_workers
+
+    # Collect all file jobs
+    file_jobs = []
     for filename in os.listdir(folder_with_modified_files):
         if not filename.endswith('_llm.dfy'):
             continue
 
         match = re.match(r'^(.*)_\d+_llm\.dfy$', filename)
         if not match:
-            print(f"Could not find stripped file for {filename}")
-            log_file.write(f"Could not find stripped file for {filename}\n")
+            log(f"Could not find stripped file for {filename}")
             continue
 
         base_name = match.group(1)
@@ -2005,56 +2320,91 @@ def simplify_folder(folder_with_stripped_files: str, folder_with_modified_files:
         filepath_simplified = os.path.join(folder_with_simplified_files,
                                            filename.replace('_llm.dfy', '_llm_simplified.dfy'))
 
-        print(f"\n{'='*60}")
-        print(f"Simplifying {filename}")
-        print(f"{'='*60}")
-        log_file.write(f"\n{'='*60}\n")
-        log_file.write(f"Simplifying {filename}\n")
-        log_file.write(f"{'='*60}\n")
+        if not os.path.exists(filepath_stripped):
+            log(f"Stripped file not found: {filepath_stripped}")
+            continue
 
-        # get timestamp
-        timestamp_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        file_jobs.append((filepath_stripped, filepath_modified, filepath_simplified,
+                         start_from_simplified_files))
 
-        # simplify() now handles all rounds internally (single preprocessing)
-        removed_lines_count = simplify_file(
-            filepath_stripped,
-            filepath_modified,
-            filepath_simplified,
-            start_from_simplified_file=start_from_simplified_files
-        )
+    log(f"\nFound {len(file_jobs)} files to process with {parallel_workers} worker(s)")
 
-        timestamp_end = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        elapsed_seconds = (
-            time.mktime(time.strptime(timestamp_end, "%Y-%m-%d %H:%M:%S"))
-            - time.mktime(time.strptime(timestamp_start, "%Y-%m-%d %H:%M:%S"))
-        )
-        total_time_seconds += elapsed_seconds
+    total_simplified_files = 0
+    total_removed_lines = 0
+    total_time_seconds = 0
+    aggregated_stats = ProfileStats() if enable_profiling else None
 
-        if removed_lines_count > 0:
-            print(f"\n{filename}: Simplified by removing {removed_lines_count} lines (time: {elapsed_seconds:.0f} seconds) ")
-            log_file.write(f"\n{filename}: Simplified by removing {removed_lines_count} lines (time: {elapsed_seconds:.0f} seconds) \n")
-            total_simplified_files += 1
-            total_removed_lines += removed_lines_count
-        else:
-            print(f"\n{filename}: Could not be simplified (time: {elapsed_seconds:.0f} seconds)")
-            log_file.write(f"\n{filename}: Could not be simplified (time: {elapsed_seconds:.0f} seconds)\n")
+    batch_start_time = time.time()
 
+    if parallel_workers <= 1:
+        # Sequential processing (same as v8)
+        for i, job in enumerate(file_jobs):
+            args = (*job, f"seq-{i}")
+            filename, removed_lines, elapsed, profile_stats = _simplify_file_worker(args)
 
-    print(f"\n{'='*60}")
-    print(f"BATCH COMPLETE")
-    print(f"Total simplified files: {total_simplified_files}")
-    print(f"Total removed lines: {total_removed_lines}")
-    print(f"Total time: {total_time_seconds/60:.0f} minutes")
-    print(f"{'='*60}")
-    log_file.write(f"\n{'='*60}\n")
-    log_file.write(f"BATCH COMPLETE\n")
-    log_file.write(f"Total simplified files: {total_simplified_files}\n")
-    log_file.write(f"Total removed lines: {total_removed_lines}\n")
-    log_file.write(f"Total time: {total_time_seconds/60:.0f} minutes\n")
-    log_file.write(f"{'='*60}\n")
+            total_time_seconds += elapsed
+
+            if removed_lines > 0:
+                log(f"\n{filename}: Simplified by removing {removed_lines} lines (time: {elapsed:.0f} seconds)")
+                total_simplified_files += 1
+                total_removed_lines += removed_lines
+            elif removed_lines == 0:
+                log(f"\n{filename}: Could not be simplified (time: {elapsed:.0f} seconds)")
+            else:
+                log(f"\n{filename}: Error during processing (time: {elapsed:.0f} seconds)")
+
+            if enable_profiling and profile_stats:
+                aggregated_stats.merge(profile_stats)
+    else:
+        # Parallel processing
+        worker_args = [(job[0], job[1], job[2], job[3], f"p{i}")
+                       for i, job in enumerate(file_jobs)]
+
+        with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
+            futures = {executor.submit(_simplify_file_worker, args): args
+                      for args in worker_args}
+
+            for future in as_completed(futures):
+                try:
+                    filename, removed_lines, elapsed, profile_stats = future.result()
+
+                    total_time_seconds += elapsed
+
+                    if removed_lines > 0:
+                        log(f"\n{filename}: Simplified by removing {removed_lines} lines (time: {elapsed:.0f} seconds)")
+                        total_simplified_files += 1
+                        total_removed_lines += removed_lines
+                    elif removed_lines == 0:
+                        log(f"\n{filename}: Could not be simplified (time: {elapsed:.0f} seconds)")
+                    else:
+                        log(f"\n{filename}: Error during processing (time: {elapsed:.0f} seconds)")
+
+                    if enable_profiling and profile_stats:
+                        aggregated_stats.merge(profile_stats)
+
+                except Exception as e:
+                    args = futures[future]
+                    log(f"Error processing {args[1]}: {e}")
+
+    batch_elapsed = time.time() - batch_start_time
+
+    log(f"\n{'='*60}")
+    log(f"BATCH COMPLETE")
+    log(f"Total simplified files: {total_simplified_files}")
+    log(f"Total removed lines: {total_removed_lines}")
+    log(f"Total CPU time: {total_time_seconds/60:.1f} minutes")
+    log(f"Wall clock time: {batch_elapsed/60:.1f} minutes")
+    if parallel_workers > 1:
+        log(f"Speedup: {total_time_seconds/batch_elapsed:.2f}x with {parallel_workers} workers")
+    log(f"{'='*60}")
+
+    # Print aggregated profiling summary
+    if enable_profiling and aggregated_stats:
+        aggregated_stats.print_summary()
+
     return total_simplified_files, total_removed_lines
 
 
 # Main entry point
 if __name__ == "__main__":
-    simplify_folder(r"TODO",r"TODO",r"TODO")
+    simplify_folder(r"TODO", r"TODO", r"TODO")
