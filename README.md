@@ -6,6 +6,7 @@ This repository contains the **replication package** for the paper:
 
 The package includes the dataset, experimental results, scripts, and analysis artifacts required to reproduce the experiments and analyses reported in the paper.
 
+A preprint is available at: https://arxiv.org/abs/2601.12845
 ---
 
 ## Repository Structure
