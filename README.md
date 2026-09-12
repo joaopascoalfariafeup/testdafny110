@@ -122,3 +122,27 @@ Directory containing the artifacts of the user study described in our paper:
 - `artifacts_user_study.pdf`  
   Describes the user instructions, experimental_exercises and feedback questionnaire.
 
+
+## Environment Variables
+
+To use the Python scripts, create a '.env' file defining relevant variables. 
+
+### --- API keys ---
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+
+### --- Dafny ---
+DAFNY_EXECUTABLE=
+
+### --- generator.py ---
+TESTDAFNY_INPUT_FOLDER=
+TESTDAFNY_OUTPUT_FOLDER=
+
+### --- simplifier.py ---
+TESTDAFNY_STRIPPED_FOLDER=
+TESTDAFNY_GENERATED_FOLDER=
+TESTDAFNY_SIMPLIFIED_FOLDER=
+
+### --- ablation A1 --- 
+TESTDAFNY_DISABLE_TEST_ORACLES=0
