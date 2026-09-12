@@ -4,8 +4,6 @@ This repository contains the **replication package** for the paper:
 
 > **Automatic Generation of Formal Specification and Verification Annotations Using LLMs and Test Oracles**
 
-A preprint is available at: https://arxiv.org/abs/2601.12845
-
 The package includes the dataset, experimental results, scripts, and analysis artifacts required to reproduce the experiments and analyses reported in the paper.
 
 ---
@@ -17,6 +15,7 @@ The package includes the dataset, experimental results, scripts, and analysis ar
 ```text
 .
 ├── dataset
+│   ├── original_programs
 │   ├── stripped_programs
 │   ├── subsetA
 │   ├── subsetB
@@ -25,7 +24,8 @@ The package includes the dataset, experimental results, scripts, and analysis ar
 ├── data_analysis
 │   ├── analysis_of_success_factors.xlsx
 │   ├── overall_results_and_analysis.xlsx
-│   └── analysis_selected_solutions.xlsx
+│   ├── analysis_selected_solutions.xlsx
+│   └── comparison_lu_et_al.csv
 │
 ├── llm_generated_direct_prompting
 │   ├── Claude_Opus_4.5_T=0
@@ -46,10 +46,15 @@ The package includes the dataset, experimental results, scripts, and analysis ar
 │   ├── Multimodel_selected_solutions
 │   └── Multimodel_selected_solutions_minimized
 │
+├── user_study
+│   └── artifacts_of_user_study.pdf
+│
 └── python_scripts
+    ├── abblation_rettach.py
     ├── analysis_of_success_factors.py
     ├── generator.py
-    └── simplifier.py
+    ├── simplifier.py
+    └── .env.example
 ```
 
 ## Folder Descriptions
@@ -92,6 +97,8 @@ Directory containing the Python source files used in the experimental pipeline:
 - `analysis_of_success_factors.py`  
   Performs statistical analysis of success factors using **logistic regression**.
 
+- `abblation_retach.py`  
+  Performs the abblation experiments to determine the impact of test oracles and prompts.
 ---
 
 ### 📁 `data_analysis`
@@ -105,3 +112,13 @@ Directory containing analysis artifacts and result files:
 
 - `analysis_of_success_factors.xlsx`  
   Source data and results used for the logistic regression analysis.
+
+- `comparison_lu_et_al.csv`  
+  Per-task comparison with the approach of Lu et al. (Sec. 8.2 of the paper), covering the 123 MBPP-DFY tasks of their benchmark. Columns: `mbpp_task_id`; `lu_subset` (DFY-26 or DFY-97); `file_in_testdafny110` and `shared_with_testdafny110`; `lu_success`; `ours_success_multimodel_repair`; and `comment`.
+
+  ### 📁 `user_study`
+Directory containing the artifacts of the user study described in our paper:
+
+- `artifacts_user_study.pdf`  
+  Describes the user instructions, experimental_exercises and feedback questionnaire.
+
