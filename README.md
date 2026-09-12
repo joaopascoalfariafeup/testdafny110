@@ -123,6 +123,8 @@ Directory containing the artifacts of the user study described in our paper:
   Describes the user instructions, experimental_exercises and feedback questionnaire.
 
 
+---
+
 ## Environment Variables
 
 To use the Python scripts, create a '.env' file defining relevant variables. 
