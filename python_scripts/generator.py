@@ -27,19 +27,55 @@ class LLMData:
 
 ####### Configuration parameters #######
 
+# Folder paths, API keys and the Dafny executable path are read from environment
+# variables, optionally supplied in a file named '.env' placed next to this script
+# (see '.env.example' for the list of names). The '.env' file must never be committed.
+
+import os as _os
+from pathlib import Path as _Path
+
+def _clean_value(v):
+    """Strip surrounding quotes and a Python-style r/R prefix, if present."""
+    v = v.strip()
+    if v[:1] in ("r", "R") and v[1:2] in (chr(34), chr(39)):
+        v = v[1:]
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in (chr(34), chr(39)):
+        v = v[1:-1]
+    return v
+
+def _load_env(path=_Path(__file__).with_name(".env")):
+    """Load KEY=VALUE lines from a .env file into the environment (no external deps)."""
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                _os.environ.setdefault(k.strip(), _clean_value(v))
+
+_load_env()
+
+def _cfg(name, default=None):
+    value = _os.environ.get(name, default)
+    if value is None or (value == "" and default is None):
+        raise SystemExit(
+            f"Missing configuration: set {name} as an environment variable "
+            f"or in python_scripts/.env (see .env.example)."
+        )
+    return value
+
 # Folder with source files in Dafny (with extension .dfy)
-input_folder = r"TODO: specify input folder"
+input_folder = _cfg("TESTDAFNY_INPUT_FOLDER")
 
 # Folder to place generated files in Dafny (different from the previous folder)
-output_folder_base = r"TODO: specify output folder"
+output_folder_base = _cfg("TESTDAFNY_OUTPUT_FOLDER")
 
-# API keys
-openai_key = r"TODO: specify OpenAI API key"
-antrophic_key = r"TODO: specify Anthropic API key"
-deepseek_key = r"TODO: specify DeepSeek API key"
+# API keys (empty when the corresponding provider is not used)
+openai_key = _cfg("OPENAI_API_KEY", "")
+antrophic_key = _cfg("ANTHROPIC_API_KEY", "")
+deepseek_key = _cfg("DEEPSEEK_API_KEY", "")
 
 # Path to the Dafny executable 
-dafny_executable = r"TODO: specify Dafny executable path"
+dafny_executable = _cfg("DAFNY_EXECUTABLE")
 
 # Verbosity level (0: no output, 1: some output, 2: detailed output)
 verbose = 1
@@ -51,8 +87,41 @@ verifier_timeout = 60
 remove_lemmas = True
 remove_helpers = True
 
+# Ablation A1 (test oracles disabled): when True, test methods are marked with the
+# {:verify false} attribute in the stripped program, so that their assertions are NOT
+# part of the acceptance criterion, while remaining visible to the LLM in the prompt.
+# Negative tests (//@invalid) are also ignored in this mode, since the enclosing test
+# method is not verified at all.
+disable_test_oracles = _cfg("TESTDAFNY_DISABLE_TEST_ORACLES", "0").strip().lower() in ("1", "true", "yes")
+
+# Ablation A2 (test code removed): when True, the test methods are removed altogether
+# from the stripped program and saved to a sidecar file <Program>_tests.dfy, so that
+# they can be re-attached afterwards. The saved methods are the STRIPPED ones (without
+# the "// helper" assertions), i.e. exactly the test code the baseline pipeline sees.
+remove_test_code = _cfg("TESTDAFNY_REMOVE_TEST_CODE", "0").strip().lower() in ("1", "true", "yes")
+
+# Ablation P1 (minimal prompts): when True, both prompts are truncated right after
+# the Task Requirements section, removing the Dafny syntax rules, the guidelines for
+# pre/postconditions and loop invariants and the few-shot patterns from the direct
+# prompt, and the whole catalogue of repair hints from the repair prompt. The
+# guardrails against cheating (no 'assume', no 'decreases *', do not change test
+# assertions) live inside Task Requirements and are therefore retained, so that this
+# ablation isolates the guidance and not the guardrails.
+minimal_prompts = _cfg("TESTDAFNY_MINIMAL_PROMPTS", "0").strip().lower() in ("1", "true", "yes")
+
+# The ablations are mutually exclusive: combining them would confound the result,
+# and a stale setting left in .env is easy to miss. Fail loudly instead.
+_ablations = [name for name, on in (("TESTDAFNY_DISABLE_TEST_ORACLES", disable_test_oracles),
+                                    ("TESTDAFNY_REMOVE_TEST_CODE", remove_test_code),
+                                    ("TESTDAFNY_MINIMAL_PROMPTS", minimal_prompts)) if on]
+if len(_ablations) > 1:
+    raise SystemExit(
+        "Conflicting ablations enabled at the same time: " + ", ".join(_ablations) +
+        ". Enable at most one; check python_scripts/.env for a stale setting."
+    )
+
 # LLMs to try with temperature and number of attempts (uncomment the one to be used)
-llms = [LLMData(API.Antrophic, "claude-opus-4-5", 0.5, 1, 1, 10)] 
+llms = [LLMData(API.Antrophic, "claude-opus-4-5-20251101", 0.5, 1, 1, 10)] # snapshot pinned, as reported in the paper
 #llms=[LLMData(API.OpenAI, "gpt-5.2", 0.5, 1, 1, 10)]
 #llms = [LLMData(API.DeepSeek, "deepseek-chat", 0.5, 1, 1, 2)]
 #llms = [LLMData(API.OpenAI, "gpt-4-0613", 0.5, 0, 0, 4)]
@@ -195,19 +264,33 @@ c) Only if previous options don't work, provide auxliary lemmas proving the uniq
 """
 
 
+
+# Apply the minimal-prompt ablation by cutting each prompt at its first section
+# after Task Requirements.
+def _truncate_prompt(prompt, cut_marker):
+    idx = prompt.find(cut_marker)
+    return prompt if idx < 0 else prompt[:idx].rstrip() + chr(10)
+
+if minimal_prompts:
+    base_prompt = _truncate_prompt(base_prompt, "Follow Dafny syntax rules:")
+    repair_prompt = _truncate_prompt(repair_prompt, "Hints for fixing verification errors:")
+    # avoid a dangling reference to hints that are no longer present
+    repair_prompt = repair_prompt.replace(" (using hints below when applicable)", "")
+
 ######## Global initializations ########
 
 # create output folder
-output_folder = output_folder_base + "/" + llms[0].model + " - " + str(llms[0].temperature) + " - " + time.strftime(r"%Y-%m-%d %H-%M")
+output_folder = output_folder_base + "/" + llms[0].model + " - " + str(llms[0].temperature) + (" - no oracles" if disable_test_oracles else (" - no tests" if remove_test_code else (" - minimal prompts" if minimal_prompts else ""))) + " - " + time.strftime(r"%Y-%m-%d %H-%M")
 os.makedirs(output_folder, exist_ok=True)
 
 # initialize the log file
 log_file = open(output_folder + r"\_log.txt", "w")
 
-# initialize the API clients
-clientOpenAI = OpenAI(api_key = openai_key)
-clientAnthropic = anthropic.Anthropic(api_key = antrophic_key)
-clientDeepSeek = OpenAI(api_key = deepseek_key, base_url = "https://api.deepseek.com/v1")
+# initialize the API clients (lazily, so that a missing key for an unused provider
+# does not prevent the script from running)
+clientOpenAI = OpenAI(api_key = openai_key) if openai_key else None
+clientAnthropic = anthropic.Anthropic(api_key = antrophic_key) if antrophic_key else None
+clientDeepSeek = OpenAI(api_key = deepseek_key, base_url = "https://api.deepseek.com/v1") if deepseek_key else None
 
 ######## Dany file merging ########
 
@@ -299,7 +382,71 @@ tokens_spent = 0
 
 # Remove pre/post-conditions, loop invariants and ghost functions and predicates
 # from a Dafny file and saves the result to a new file
-def remove_prepostinv_lines_and_save(filepath, remove_loopinv = True, remove_prepost = True, remove_ghost_func_pred=True):
+# Matches the header of a parameterless method with no return values, capturing
+# indentation, existing attributes, name and the remainder of the line.
+test_method_header_pattern = re.compile(
+    r'^(\s*)method\s+((?:\{:[^}]*\}\s*)*)([A-Za-z_0-9]+)\s*\(\s*\)(.*)$')
+
+# Decides whether a method header denotes a test method. A test method is a method
+# whose name contains 'test' (in any case) or is 'Main', taking no parameters and
+# returning no values. This rule identifies exactly one such method (two, in one case)
+# in each of the 110 programs of the TESTDAFNY110 dataset.
+def is_test_method_header(name, rest):
+    is_test_name = re.search(r'test', name, re.IGNORECASE) is not None or name == 'Main'
+    return is_test_name and 'returns' not in rest
+
+
+# Marks every test method in the given lines with the {:verify false} attribute, so that
+# its assertions are not checked by the verifier and therefore do not take part in the
+# acceptance criterion (ablation A1). Returns the modified lines and the number of
+# test methods marked.
+def disable_test_method_verification(lines):
+    count = 0
+    new_lines = []
+    for line in lines:
+        # '$' matches before a trailing newline and '.' never matches it, so the line
+        # can be matched as is; 'rest' never captures the line terminator.
+        match = test_method_header_pattern.match(line)
+        if match is not None:
+            indent, attributes, name, rest = match.groups()
+            if is_test_method_header(name, rest) and ':verify' not in attributes:
+                eol = line[len(line.rstrip(chr(13) + chr(10))):]
+                line = indent + 'method {:verify false} ' + attributes + name + '()' + rest + eol
+                count += 1
+        new_lines.append(line)
+    return new_lines, count
+
+
+# Returns (first_line, last_line) index pairs, inclusive, covering each test method
+# declaration (header through its matching closing brace).
+def find_test_method_regions(lines):
+    regions = []
+    i = 0
+    while i < len(lines):
+        match = test_method_header_pattern.match(lines[i])
+        if match is not None and is_test_method_header(match.group(3), match.group(4)):
+            depth = 0
+            started = False
+            j = i
+            while j < len(lines):
+                code = lines[j].split(chr(47) + chr(47))[0]
+                for ch in code:
+                    if ch == chr(123):
+                        depth += 1
+                        started = True
+                    elif ch == chr(125):
+                        depth -= 1
+                if started and depth <= 0:
+                    break
+                j += 1
+            regions.append((i, min(j, len(lines) - 1)))
+            i = j + 1
+        else:
+            i += 1
+    return regions
+
+
+def remove_prepostinv_lines_and_save(filepath, remove_loopinv = True, remove_prepost = True, remove_ghost_func_pred=True, disable_oracles = None, remove_tests = None):
     # Get filename from filepath
     filename = os.path.basename(filepath)
 
@@ -365,7 +512,35 @@ def remove_prepostinv_lines_and_save(filepath, remove_loopinv = True, remove_pre
     # if none removed, just terminate and return None
     if len(lines) == old_len:
         return None
-    
+
+    # Ablation A1: keep the test methods visible to the LLM, but exclude their
+    # assertions from the acceptance criterion by marking them {:verify false}.
+    if disable_test_oracles if disable_oracles is None else disable_oracles:
+        lines, num_disabled = disable_test_method_verification(lines)
+        if num_disabled == 0:
+            print(f"WARNING: no test method identified in {filename}; oracles not disabled")
+            log_file.write(f"WARNING: no test method identified in {filename}; oracles not disabled" + chr(10))
+        elif verbose > 1:
+            print(f"Disabled verification of {num_disabled} test method(s) in {filename}")
+
+    # Ablation A2: remove the test methods altogether, saving them for re-attachment.
+    if remove_test_code if remove_tests is None else remove_tests:
+        regions = find_test_method_regions(lines)
+        if not regions:
+            print("WARNING: no test method identified in " + filename + "; test code not removed")
+            log_file.write("WARNING: no test method identified in " + filename + "; test code not removed" + chr(10))
+        else:
+            inside = set()
+            for first, last in regions:
+                inside.update(range(first, last + 1))
+            test_lines = [l for idx, l in enumerate(lines) if idx in inside]
+            lines = [l for idx, l in enumerate(lines) if idx not in inside]
+            tests_path = os.path.join(output_folder, filename[:-4] + "_tests.dfy")
+            with open(tests_path, "w", encoding="utf-8") as tf:
+                tf.writelines(test_lines)
+            if verbose > 1:
+                print("Saved " + str(len(regions)) + " test method(s) of " + filename + " to " + tests_path)
+
     # Write the filtered lines to the new file in output folder
     with open(new_filepath, 'w') as new_file:
         new_file.writelines(lines)
@@ -383,7 +558,11 @@ disjunctive_asssert_pattern = re.compile(
         r'^\s*assert\s+(\w+)\s*==\s*(.+?)\s*\|\|\s*\1\s*==\s*(.+?)\s*;\s*$')
 
 # Verifies a Dafny file using the Dafny verifier
-def verify_dafny_file(filepath, split_disjunctive_test_assertions = False, handle_negative_tests = True):
+def verify_dafny_file(filepath, split_disjunctive_test_assertions = False, handle_negative_tests = None):
+    # by default, negative tests (//@invalid) are handled, except in the ablation
+    # mode in which test methods are not verified at all
+    if handle_negative_tests is None:
+        handle_negative_tests = not disable_test_oracles
     # run the verifier
     process = subprocess.Popen([dafny_executable,"verify", filepath,"--verification-time-limit:" + str(verifier_timeout),"--allow-warnings:true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)     
     stdout, _ = process.communicate()
@@ -500,6 +679,36 @@ def verify_dafny_file(filepath, split_disjunctive_test_assertions = False, handl
 
 
 ####### LLM processing #######
+# Token usage of the most recent API call, recorded by call_llm and written to the
+# results file by process_file. Both providers report usage on the response; for
+# reasoning models the reasoning tokens are billed as output and are reported
+# separately when the provider exposes them.
+last_usage = {'input': '', 'output': '', 'reasoning': ''}
+
+
+def record_usage(response):
+    """Extract token usage from an API response, tolerating provider differences."""
+    global last_usage
+    last_usage = {'input': '', 'output': '', 'reasoning': ''}
+    usage = getattr(response, 'usage', None)
+    if usage is None:
+        return
+    # Anthropic: input_tokens / output_tokens; OpenAI: prompt_tokens or input_tokens
+    for key, names in (('input', ('input_tokens', 'prompt_tokens')),
+                       ('output', ('output_tokens', 'completion_tokens'))):
+        for name in names:
+            value = getattr(usage, name, None)
+            if value is not None:
+                last_usage[key] = value
+                break
+    # OpenAI reasoning models report reasoning tokens in a nested details object
+    details = getattr(usage, 'output_tokens_details', None) or getattr(usage, 'completion_tokens_details', None)
+    if details is not None:
+        value = getattr(details, 'reasoning_tokens', None)
+        if value is not None:
+            last_usage['reasoning'] = value
+
+
 def call_llm(task_id, llm_data, system_prompt, user_prompt):
     try:
         start_time_api_call = time.time()
@@ -512,6 +721,7 @@ def call_llm(task_id, llm_data, system_prompt, user_prompt):
                     reasoning={"effort": "low"},
                     text={"verbosity": "low"}
                 )
+                record_usage(response)
                 #extract text
                 output = ""
                 for item in response.output:
@@ -528,6 +738,7 @@ def call_llm(task_id, llm_data, system_prompt, user_prompt):
                     model = llm_data.model, 
                     temperature = llm_data.temperature
                 )         
+                record_usage(response)
                 output = response.choices[0].message.content
         elif llm_data.api == API.DeepSeek:
             response = clientDeepSeek.chat.completions.create(
@@ -538,6 +749,7 @@ def call_llm(task_id, llm_data, system_prompt, user_prompt):
                 model = llm_data.model,
                 temperature = llm_data.temperature
             )            
+            record_usage(response)
             output = response.choices[0].message.content
         elif llm_data.api == API.Antrophic:
             response = clientAnthropic.messages.create(
@@ -549,6 +761,7 @@ def call_llm(task_id, llm_data, system_prompt, user_prompt):
                     {"role": "user", "content": user_prompt}
                 ]
             )
+            record_usage(response)
             output = response.content[0].text
         else:
             raise ValueError(f"Unsupported API type: {llm_data.api}")
@@ -793,7 +1006,7 @@ def process_directory(refined_prompt = True, post_processing = True, repair_mode
 
     # create CSV file to store the results
     results_file = open(output_folder + r"\_results.csv", "w")
-    results_file.write("Filename; Attempt; Success; Time Gen; Time Ver; Time API Call; Success Merged Original; Success Raw; Success Postprocessed\n")
+    results_file.write("Filename; Attempt; Success; Time Gen; Time Ver; Time API Call; Success Merged Original; Success Raw; Success Postprocessed; In Tokens; Out Tokens; Reasoning Tokens\n")
 
     ignore = True if start_file is not None else False
     
@@ -916,6 +1129,7 @@ def process_directory(refined_prompt = True, post_processing = True, repair_mode
                             succ_merged_original = 0
         
                     # write the results to the CSV file
+                    tok_in, tok_out, tok_reason = last_usage['input'], last_usage['output'], last_usage['reasoning']
                     results_file.write(f"{filename}; {file_attempts}; {success}; {time_spent:.4f}; {time_spent2:.4f}; {time3: .4f}; {succ_merged_original};{succ_llm_output};{succ_postprocessed_output}\n")
                     results_file.flush()
 
@@ -944,4 +1158,12 @@ def process_directory(refined_prompt = True, post_processing = True, repair_mode
         print(f"Original files not verified and skipped: {original_files_skipped}")
 
 
-process_directory(repair_mode = True, check_error_type = True) 
+if __name__ == "__main__":
+    if disable_test_oracles:
+        print("ABLATION A1: test methods marked {:verify false}; their assertions are NOT part of the acceptance criterion")
+    if remove_test_code:
+        print("ABLATION A2: test methods removed from the input and saved to <Program>_tests.dfy for re-attachment")
+    if minimal_prompts:
+        print("ABLATION P1: prompts truncated after Task Requirements (guidance removed, guardrails kept)")
+    process_directory(repair_mode = True, check_error_type = True)
+

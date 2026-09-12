@@ -64,8 +64,43 @@ import threading
 # Configuration Parameters
 # ==============================================================================
 
+# Configuration is read from environment variables, optionally supplied in a file
+# named '.env' placed next to this script (see '.env.example'). Never commit '.env'.
+
+import os as _os
+from pathlib import Path as _Path
+
+def _clean_value(v):
+    """Strip surrounding quotes and a Python-style r/R prefix, if present."""
+    v = v.strip()
+    if v[:1] in ("r", "R") and v[1:2] in (chr(34), chr(39)):
+        v = v[1:]
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in (chr(34), chr(39)):
+        v = v[1:-1]
+    return v
+
+def _load_env(path=_Path(__file__).with_name(".env")):
+    """Load KEY=VALUE lines from a .env file into the environment (no external deps)."""
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                _os.environ.setdefault(k.strip(), _clean_value(v))
+
+_load_env()
+
+def _cfg(name, default=None):
+    value = _os.environ.get(name, default)
+    if value is None or (value == "" and default is None):
+        raise SystemExit(
+            f"Missing configuration: set {name} as an environment variable "
+            f"or in python_scripts/.env (see .env.example)."
+        )
+    return value
+
 # Path to the Dafny executable (full path, or just "dafny.exe" if in PATH)
-dafny_executable = r"TODO"
+dafny_executable = _cfg("DAFNY_EXECUTABLE")
 
 # Verbosity level:
 #   0 = silent (no output)
@@ -2407,4 +2442,6 @@ def simplify_folder(folder_with_stripped_files: str, folder_with_modified_files:
 
 # Main entry point
 if __name__ == "__main__":
-    simplify_folder(r"TODO", r"TODO", r"TODO")
+    simplify_folder(_cfg("TESTDAFNY_STRIPPED_FOLDER"),
+                    _cfg("TESTDAFNY_GENERATED_FOLDER"),
+                    _cfg("TESTDAFNY_SIMPLIFIED_FOLDER"))

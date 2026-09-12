@@ -73,6 +73,43 @@ print(f"AIC: {model_base.aic:.2f}")
 print(f"BIC: {model_base.bic:.2f}")
 
 # --------------------------------------------------
+# 4b. Robustness: the observations are not independent
+# --------------------------------------------------
+# Each program contributes one observation per configuration (14 in total), and
+# those are correlated. Treating them as independent understates the standard
+# errors, so we re-estimate the same model with standard errors clustered by
+# program, and additionally with a random intercept per program. The point
+# estimates are unchanged by construction; what changes is their significance.
+
+TERMS = ["ProgLOC", "AnnotLOC", "HelperLOC"]
+
+model_clustered = smf.glm(
+    "Success ~ ProgLOC + AnnotLOC + HelperLOC + C(Config)",
+    data=long,
+    family=sm.families.Binomial()
+).fit(cov_type="cluster", cov_kwds={"groups": long["Program"]})
+
+print("\n" + "="*60)
+print("ROBUSTNESS: STANDARD ERRORS CLUSTERED BY PROGRAM")
+print("="*60)
+for term in TERMS:
+    print(f"  {term:10} coef={model_base.params[term]:+.4f}"
+          f"  se(indep)={model_base.bse[term]:.4f} p={model_base.pvalues[term]:.3g}"
+          f"  |  se(clustered)={model_clustered.bse[term]:.4f}"
+          f" p={model_clustered.pvalues[term]:.3g}")
+
+try:
+    model_re = smf.mixedlm(
+        "Success ~ ProgLOC + AnnotLOC + HelperLOC + C(Config)",
+        data=long, groups=long["Program"]).fit()
+    print("\n=== Random intercept per program (signs and ordering only) ===")
+    for term in TERMS:
+        print(f"  {term:10} coef={model_re.params[term]:+.4f}"
+              f" se={model_re.bse[term]:.4f} p={model_re.pvalues[term]:.3g}")
+except Exception as exc:
+    print(f"\nRandom-intercept model not fitted: {type(exc).__name__}: {exc}")
+
+# --------------------------------------------------
 # 5. Fit logistic regression WITH subdataset
 # --------------------------------------------------
 
